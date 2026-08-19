@@ -1,0 +1,24 @@
+# Local config with personal network info - never commit
+config.json
+
+# ML data (your driving logs - large and personal)
+data/
+*.csv
+
+# Trained models (regenerate from your own data)
+models/
+
+# Python cache
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Reports generated on-device
+reports/
+
+# Debug/scratch files from development
+freeze.txt
+monitor_log.txt
+test_queue.json
+old/

@@ -1,0 +1,34 @@
+{
+    "obd_port": "/dev/ttyUSB0",
+    "coolant_warn_c": 105,
+    "idle_warn_seconds": 1800,
+    "voltage_warn": 12.2,
+    "log_every": 5,
+    "dyno_calibration": 1.0,
+    "ollama_ip": "YOUR_OLLAMA_LAPTOP_IP_HERE",
+    "touch": {
+        "device": "/dev/input/event3",
+        "quit_corner": "top_left",
+        "quit_hold_seconds": 2.0,
+        "quit_zone_px": 80
+    },
+    "voice": {
+        "model_path": "vosk-model-small-en-us-0.15",
+        "device_name": "USB Audio",
+        "sample_rate": 44100,
+        "record_seconds": 5
+    },
+    "dyno": {
+        "vehicle_weight_lbs": 4200,
+        "drivetrain_loss": 0.15,
+        "min_pull_speed_mph": 15,
+        "max_pull_speed_mph": 80
+    },
+    "gauges": {
+        "rpm":     {"min": 0,   "max": 7000, "warn": 5500, "danger": 6500, "unit": ""},
+        "boost":   {"min": 0,   "max": 25,   "warn": 15,   "danger": 20,   "unit": "psi"},
+        "afr":     {"min": 10,  "max": 18,   "warn": 15,   "danger": 15.5, "unit": ""},
+        "load":    {"min": 0,   "max": 100,  "warn": 85,   "danger": 95,   "unit": "%"},
+        "coolant": {"warn": 105, "danger": 115}
+    }
+}

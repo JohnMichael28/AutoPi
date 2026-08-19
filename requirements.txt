@@ -1,0 +1,7 @@
+obd
+pygame
+evdev
+vosk
+sounddevice
+requests
+numpy
