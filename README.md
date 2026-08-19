@@ -102,4 +102,9 @@ on-device.
 
 ## License
 
-MIT License — see the LICENSE file.
+## License
+
+Copyright (c) 2026 JohnMichael Betancourt. All Rights Reserved.
+This project is viewable for portfolio and evaluation purposes only.
+No use, copying, or distribution is permitted without written permission.
+See the LICENSE file.
