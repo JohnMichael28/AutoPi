@@ -553,15 +553,15 @@ class UI:
         # Live-refresh the active diagnostic screen while it's open.
         if self.state in ("diag", "report") and self._active_diag is not None:
             self._diag_refresh_frame += 1
-            if self._diag_refresh_frame >= 120:      # ~2s at 60fps
+            if self._diag_refresh_frame >= 120:
                 self._diag_refresh_frame = 0
                 kind, which = self._active_diag
                 if kind == "fuel":
                     threading.Thread(target=self._build_fuel_screen, daemon=True).start()
                 elif kind == "report":
                     self._build_report()
-                elif kind == "reader":
-                    self.diag_screen.open(self._readers[which])
+                # readers NOT auto-refreshed - they read once (codes don't
+                # change while viewing, and re-reading collides with the poller)
         
         # Auto-surface the tuning monitor if live knock is detected, from the
         # face or menu. This is the "something's wrong in the engine" alarm.

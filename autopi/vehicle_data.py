@@ -43,6 +43,7 @@ class VehicleData:
         self.last_tier = None
         
         self._fuel_flag = None
+        self._last_snapshot = {}      # cached snapshot for fuel_health() to read
         
         from autopi.dyno_capture import DynoCapture
         import json
@@ -162,41 +163,45 @@ class VehicleData:
             speed_mph = reading.speed * 0.621371
         self._dyno.feed(reading.rpm, speed_mph)
         
-        # Guardian mood reacts to fuel trims, but only after the condition
-        # PERSISTS - a single noisy reading won't flip the face. Debounced.
+        # Only evaluate fuel warnings when we have a VALID live reading (engine
+        # running, real rpm). Garbage/partial readings during a connection drop
+        # must NOT trip the guardian - that's the false-alarm cause.
         bad_now = None
-        for t in (reading.stft_b1, reading.ltft_b1):
-            if isinstance(t, (int, float)) and abs(t) > 15:
-                bad_now = "bad"
-            elif isinstance(t, (int, float)) and abs(t) > 10 and bad_now is None:
-                bad_now = "warn"
+        if isinstance(reading.rpm, (int, float)) and reading.rpm > 0:
+            for t in (reading.stft_b1, reading.ltft_b1):
+                if isinstance(t, (int, float)) and abs(t) > 15:
+                    bad_now = "bad"
+                elif isinstance(t, (int, float)) and abs(t) > 10 and bad_now is None:
+                    bad_now = "warn"
         if bad_now is not None:
             self._fuel_bad_streak += 1
         else:
             self._fuel_bad_streak = 0
-        # Only show the flag once it's been consistent for 3+ readings.
         self._fuel_flag = bad_now if self._fuel_bad_streak >= 3 else None
         
-        return {
+        result = {
             "speed": int(round(reading.speed * 0.621371)) if isinstance(reading.speed, (int, float)) else "--",
             "boost": safe_round(reading.boost_psi, 1),
             "afr": safe_round(reading.afr, 1),
             "fuel": fuel_range,
             "engine_load": safe_round(reading.engine_load, 1),
-            "oil_temp": "--",                          # not supported on most cars
+            "oil_temp": "--",
             "rpm": safe_round(reading.rpm, 0),
             "run_time": self._run_time_minutes(),
             "coolant_temp": safe_round(reading.coolant_temp, 0),
             "voltage": safe_round(reading.voltage, 1),
-            "timing": safe_round(reading.timing, 1),   # NOW populated
-            "throttle": safe_round(reading.throttle, 1),  # NOW populated
+            "timing": safe_round(reading.timing, 1),
+            "throttle": safe_round(reading.throttle, 1),
             "intake_temp": safe_round(reading.intake_temp, 0),
             "stft_b1": safe_round(reading.stft_b1, 1),
             "ltft_b1": safe_round(reading.ltft_b1, 1),
+            "o2_b1s2": safe_round(reading.o2_b1s2, 2),
             "mode": self.mode,
             "has_codes": self.has_codes,
             "needs_gas": self.needs_gas,
         }
+        self._last_snapshot = result      # cache for fuel_health (no extra reads)
+        return result
 
     def get_dyno_run(self):
         return self._dyno.get_last_run()
@@ -218,10 +223,19 @@ class VehicleData:
         return self._fuel_flag
 
     def fuel_health(self):
-        # Fresh read of all trims + O2 for the FUEL tab. Returns data + a
-        # verdict from the researched thresholds: +/-10% ok, +/-15% warn, more bad.
-        trims = self._vehicle.get_fuel_trims()
-        o2 = self._vehicle.get_o2_voltage()
+        # Read trims + O2 from the CACHED snapshot - NOT fresh OBD reads. This
+        # avoids colliding with the snapshot thread on one connection (two
+        # readers at once destabilize the ELM327). The background poller already
+        # collects these on its slow-PID rotation. B2 is None on 4-cyl (Bank 1
+        # only), which is correct for this engine.
+        snap = self._last_snapshot
+        trims = {
+            "stft_b1": snap.get("stft_b1", "--"),
+            "ltft_b1": snap.get("ltft_b1", "--"),
+            "stft_b2": None,      # 4-cyl: Bank 2 not present
+            "ltft_b2": None,
+        }
+        o2 = snap.get("o2_b1s2", "--")
         worst = 0.0
         for v in trims.values():
             if isinstance(v, (int, float)) and abs(v) > worst:

@@ -77,7 +77,7 @@ class Vehicle:
         self.vin = vin
         self.__connection = None    # private - the raw obd connection
         self.__last_reconnect = 0.0       # time of last reconnect attempt
-        self.__reconnect_cooldown = 10.0   # was 5.0 - less frequent reconnect
+        self.__reconnect_cooldown = 5.0   # was 5.0 - less frequent reconnect
         # Tiered polling: rotate through slow PIDs ONE per call so each
         # snapshot reads 4 fast + 1 slow = 5 queries, never an 11-query burst.
         self.__slow_cache = {}
@@ -101,11 +101,10 @@ class Vehicle:
 
     def reconnect(self):
         # Re-establish after a drop, throttled so a flickering adapter can't
-        # put us in a blocking reconnect loop. On a drop the OBDLink can
-        # re-enumerate as a DIFFERENT port (e.g. ttyUSB0 -> ttyUSB1), so if the
-        # known port fails we scan for wherever it came back. (obd.scan_serial,
-        # per python-OBD docs, finds connected adapters.) This is the fix for
-        # "drops on the highway and never comes back until restart."
+        # loop-block. The OBDLink almost always re-enumerates on the SAME port
+        # (confirmed via dmesg), so we retry the known port with a short
+        # timeout for fast recovery. scan_serial is a last resort, capped to
+        # avoid multi-minute blocking on failed handshakes.
         now = time.time()
         if now - self.__last_reconnect < self.__reconnect_cooldown:
             return False
@@ -115,23 +114,24 @@ class Vehicle:
                 self.__connection.close()
         except Exception:
             pass
-        # Try the known port first.
+        # Try the known port first with a SHORT timeout (fast fail/succeed).
         try:
-            self.__connection = obd.OBD(self.__port, fast=False, timeout=1.0,
+            self.__connection = obd.OBD(self.__port, fast=False, timeout=0.5,
                                         check_voltage=False)
             if self.__connection.is_connected():
                 return True
         except Exception:
             pass
-        # Known port failed - the adapter may have re-enumerated. Scan for it.
+        # Last resort: scan, but try at most 2 other ports so we never block
+        # for minutes on a pile of failed handshakes.
         try:
-            ports = obd.scan_serial()      # returns a list of adapter ports
+            ports = [p for p in obd.scan_serial() if p != self.__port][:2]
             for port in ports:
                 try:
-                    self.__connection = obd.OBD(port, fast=False, timeout=1.0,
+                    self.__connection = obd.OBD(port, fast=False, timeout=0.5,
                                                 check_voltage=False)
                     if self.__connection.is_connected():
-                        self.__port = port     # remember the new port
+                        self.__port = port
                         return True
                 except Exception:
                     continue
