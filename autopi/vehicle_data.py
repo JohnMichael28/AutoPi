@@ -117,10 +117,24 @@ class VehicleData:
         if self._dtc_check_frame < 30:
             return
         self._dtc_check_frame = 0
+        # Only trust DTC reads when the connection is solid. A garbage read
+        # during a marginal connection must NOT create a phantom code.
+        if not self._vehicle.is_connected():
+            return
         try:
-            self._cached_codes = self._vehicle.get_dtcs() or []
+            codes = self._vehicle.get_dtcs() or []
         except Exception:
-            self._cached_codes = []
+            return
+        # Require a code to appear on TWO consecutive checks before trusting it
+        # (a one-off garbage read during a hiccup won't trigger the red face).
+        prev = set(c[0] if isinstance(c, (list, tuple)) else c for c in self._cached_codes)
+        now = set(c[0] if isinstance(c, (list, tuple)) else c for c in codes)
+        confirmed = prev & now      # only codes present BOTH times
+        if not confirmed:
+            self._cached_codes = codes    # remember for next comparison
+            self.has_codes = False        # don't flag on a single read
+            return
+        self._cached_codes = codes
 
         for entry in self._cached_codes:
             # get_dtcs returns (code, description) tuples

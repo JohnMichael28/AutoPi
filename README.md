@@ -88,6 +88,14 @@ on-device.
 - **The ML model is in its learning phase** — collecting data now; anomaly
   detection goes live after training on enough real driving.
 - **Some PIDs aren't supported on every car** and honestly show `--`.
+- **Boost gauge → MAF:** The test vehicles do not expose manifold/intake
+  pressure (OBD-II PID 0x0B) over the standard protocol, and boost is derived
+  as manifold pressure minus barometric pressure — so true boost (PSI) cannot
+  be calculated on these cars via a standard adapter. Instead, the gauge shows
+  MAF (mass air flow, g/s), a supported measured value that is the best
+  available indicator of turbo activity: airflow rises sharply when the turbo
+  spools. This keeps the gauge honest and real rather than showing a fabricated
+  or estimated number.
 
 ## Setup
 

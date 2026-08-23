@@ -17,13 +17,13 @@ from autopi.data_logger import DataLogger
 #   None threshold = no warning on that gauge.
 MODE_STATS = {
     "highway": [
-        ("BOOST", "boost", "psi", None, None),
+        ("MAF", "boost", "g/s", None, None),
         ("COOLANT", "coolant_temp", "C", 105, "high"),
         ("RANGE", "fuel", "mi", 40, "low"),
         ("SPEED", "speed", "", None, None),
     ],
     "track": [
-        ("BOOST", "boost", "psi", 20, "high"),
+        ("MAF", "boost", "g/s", None, None),
         ("RPM", "rpm", "", 6500, "high"),
         ("AIR/FUEL", "afr", "", 15.5, "high"),
         ("COOLANT", "coolant_temp", "C", 105, "high"),
@@ -31,7 +31,7 @@ MODE_STATS = {
     "adventure": [
         ("COOLANT", "coolant_temp", "C", 105, "high"),
         ("LOAD", "engine_load", "%", 95, "high"),
-        ("BOOST", "boost", "psi", None, None),
+        ("MAF", "boost", "g/s", None, None),
         ("LT TRIM", "ltft_b1", "%", 15, "high"),
     ],
     "camp": [
@@ -101,7 +101,7 @@ class UI:
         bar_y = 60
         bar_h = 280
         self.bars = []
-        specs = [("RPM", "rpm", "rpm"), ("BOOST", "boost", "boost"),
+        specs = [("RPM", "rpm", "rpm"), ("MAF", "boost", "maf"),
                  ("AIR/FUEL", "afr", "afr"), ("LOAD", "engine_load", "load")]
         for i, (label, snap_key, cfg_key) in enumerate(specs):
             bx = 20 + i * (bar_w + gap)
@@ -442,9 +442,13 @@ class UI:
         snap = self._snapshotter.latest()
         body = ["Generated: " + time.strftime("%Y-%m-%d %H:%M:%S"), ""]
         body.append("--- LIVE READINGS ---")
-        for key in ("rpm", "speed", "coolant_temp", "boost", "voltage",
-                    "fuel", "timing", "throttle"):
-            body.append("  " + key.upper().ljust(14) + ": " + str(snap.get(key, "--")))
+        # (snapshot_key, display_label) - the "boost" key now carries MAF, so
+        # it's displayed as MAF to stay honest (this car can't read true boost).
+        for key, label in (("rpm", "RPM"), ("speed", "SPEED"),
+                           ("coolant_temp", "COOLANT_TEMP"), ("boost", "MAF"),
+                           ("voltage", "VOLTAGE"), ("fuel", "FUEL"),
+                           ("timing", "TIMING"), ("throttle", "THROTTLE")):
+            body.append("  " + label.ljust(14) + ": " + str(snap.get(key, "--")))
         body.append("")
         body.append("--- TROUBLE CODES ---")
         codes = []
@@ -752,12 +756,16 @@ class UI:
         surface.blit(title, (20, 16))
         pygame.draw.line(surface, (30, 120, 55), (20, 52), (self.width - 20, 52), 2)
         font = pygame.font.SysFont("consolas", 20)
-        fields = ["rpm", "speed", "coolant_temp", "boost", "engine_load",
-                  "voltage", "fuel", "oil_temp", "afr", "run_time"]
+        # (snapshot_key, display_label) - "boost" key now carries MAF airflow.
+        fields = [("rpm", "RPM"), ("speed", "SPEED"),
+                  ("coolant_temp", "COOLANT_TEMP"), ("boost", "MAF"),
+                  ("engine_load", "ENGINE_LOAD"), ("voltage", "VOLTAGE"),
+                  ("fuel", "FUEL"), ("oil_temp", "OIL_TEMP"),
+                  ("afr", "AFR"), ("run_time", "RUN_TIME")]
         y = 66
-        for key in fields:
+        for key, label in fields:
             value = snap.get(key, "--")
-            line = key.upper().ljust(16) + ": " + str(value)
+            line = label.ljust(16) + ": " + str(value)
             surface.blit(font.render(line, True, (57, 255, 120)), (24, y))
             y += 30
         hint = pygame.font.SysFont("consolas", 15).render(

@@ -27,6 +27,7 @@ class Reading:
         self.stft_b1 = stft_b1
         self.ltft_b1 = ltft_b1
         self.o2_b1s2 = o2_b1s2
+        
 
     def to_dict(self):
         # For the database logger (matches the readings table columns)
@@ -85,26 +86,33 @@ class Vehicle:
                             "timing", "fuel_level", "boost_psi", "afr",
                             "stft_b1", "ltft_b1", "o2_b1s2"]
         self.__slow_index = 0
+        self.__dead_reads = 0     # consecutive all-failed read cycles
     def connect(self):
         # Open the connection. fast=False + a short timeout are the documented
         # fixes for Raspberry Pi/ELM327 query hangs (python-OBD issue #149 and
         # the barracuda-fsh fork README). check_voltage=False stops false
         # disconnects when car power is electrically noisy. Short timeout means
         # a wedged query FAILS FAST (returns None) instead of freezing the UI.
-        try:
-            self.__connection = obd.OBD(self.__port, fast=False, timeout=1.0,
-                                        check_voltage=False)
-            return self.__connection.status()
-        except Exception as err:
-            self.__connection = None
-            return "connect failed: " + str(err)
+        import time as _t
+        for attempt in range(5):
+            try:
+                self.__connection = obd.OBD(self.__port, fast=False, timeout=1.0,
+                                            check_voltage=False)
+                if self.__connection.is_connected():
+                    return self.__connection.status()
+            except Exception:
+                pass
+            _t.sleep(1.0)      # wait a second, try again
+        return "connect failed after retries"
 
     def reconnect(self):
-        # Re-establish after a drop, throttled so a flickering adapter can't
-        # loop-block. The OBDLink almost always re-enumerates on the SAME port
-        # (confirmed via dmesg), so we retry the known port with a short
-        # timeout for fast recovery. scan_serial is a last resort, capped to
-        # avoid multi-minute blocking on failed handshakes.
+        # Re-establish after a drop. Post-drop, the ELM327 can be in a wedged
+        # state, and python-OBD's init handshake is known to desync (issues
+        # #226/#159: "ATH1/ATE0 did not return OK"). A clean close + a brief
+        # settle before reopening gives the adapter time to recover, which
+        # makes reconnects far more reliable. Throttled so a flickering adapter
+        # can't loop-block. The OBDLink re-enumerates on the same port, so no
+        # port scan is needed (it only added multi-minute blocking on failure).
         now = time.time()
         if now - self.__last_reconnect < self.__reconnect_cooldown:
             return False
@@ -114,27 +122,12 @@ class Vehicle:
                 self.__connection.close()
         except Exception:
             pass
-        # Try the known port first with a SHORT timeout (fast fail/succeed).
+        time.sleep(1.0)     # let the adapter settle after close before reopening
         try:
-            self.__connection = obd.OBD(self.__port, fast=False, timeout=0.5,
+            self.__connection = obd.OBD(self.__port, fast=False, timeout=1.0,
                                         check_voltage=False)
             if self.__connection.is_connected():
                 return True
-        except Exception:
-            pass
-        # Last resort: scan, but try at most 2 other ports so we never block
-        # for minutes on a pile of failed handshakes.
-        try:
-            ports = [p for p in obd.scan_serial() if p != self.__port][:2]
-            for port in ports:
-                try:
-                    self.__connection = obd.OBD(port, fast=False, timeout=0.5,
-                                                check_voltage=False)
-                    if self.__connection.is_connected():
-                        self.__port = port
-                        return True
-                except Exception:
-                    continue
         except Exception:
             pass
         return False
@@ -222,6 +215,8 @@ class Vehicle:
         # Mode 04 - clears stored DTCs AND freeze-frame data. Per OBD-II spec,
         # permanent (Mode 0A) codes are NOT cleared by this; they clear only
         # after the monitor re-runs and passes. Returns True if the command sent.
+        if self.__connection is None:
+            return False
         try:
             self.__connection.query(obd.commands.CLEAR_DTC)
             return True
@@ -229,12 +224,15 @@ class Vehicle:
             return False
 
     def read_current(self):
-        # If the adapter has dropped, don't attempt reads - each would block on
-        # the serial timeout. Try a throttled reconnect and return empties;
-        # the UI shows "--" and stays responsive until the adapter returns.
+        # is_connected() is known to report True even when the car connection is
+        # dead (python-OBD issues #70 and #205: "connected" status but every
+        # read returns None). So we do NOT trust it alone - we also count
+        # consecutive failed core reads and force a reconnect after 3, which is
+        # what actually detects a real drop.
         if not self.is_connected():
             self.reconnect()
-            return Reading(vin=self.vin)   # all None -> gauges show "--"
+            return Reading(vin=self.vin)
+
         def try_cmd(name):
             cmd = getattr(obd.commands, name, None)
             return self.read_number(cmd) if cmd is not None else None
@@ -244,14 +242,27 @@ class Vehicle:
         coolant = try_cmd("COOLANT_TEMP")
         load = try_cmd("ENGINE_LOAD")
 
-        # SLOW tier - refresh only ONE slow PID per call, rotating through the
-        # list. Each snapshot reads 4 fast + 1 slow = 5 queries max, never an
-        # 11-query burst. Each slow PID refreshes every ~7 calls (~3.5s), which
-        # is plenty for values that barely change.
+        # DEAD-CONNECTION DETECTION: if the core reads all fail, the connection
+        # is really dead even though is_connected() may still claim otherwise.
+        # After 3 consecutive all-fail cycles, force a reconnect.
+        if rpm is None and speed is None and coolant is None and load is None:
+            self.__dead_reads += 1
+            if self.__dead_reads >= 3:
+                self.__dead_reads = 0
+                self.reconnect()
+            return Reading(vin=self.vin)
+        else:
+            self.__dead_reads = 0
+
+        # ... (the rest of your slow-tier code and Reading return stays the same)
         key = self.__slow_keys[self.__slow_index]
         self.__slow_index = (self.__slow_index + 1) % len(self.__slow_keys)
         if key == "boost_psi":
-            self.__slow_cache["boost_psi"] = self.get_boost()
+            # This car doesn't expose manifold pressure (PID 0x0B), so true
+            # boost (MAP - baro) can't be derived. MAF (mass air flow, g/s) is
+            # a supported MEASURED value and the best turbo-activity indicator:
+            # airflow spikes when the turbo spools. Real data, not an estimate.
+            self.__slow_cache["boost_psi"] = try_cmd("MAF")
         elif key == "afr":
             self.__slow_cache["afr"] = self.get_afr()
         elif key == "intake_temp":
