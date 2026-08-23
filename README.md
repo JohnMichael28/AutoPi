@@ -17,7 +17,7 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
   real vehicle state (coolant, codes, fuel trims, drive mode).
 - **Four drive modes** — Highway, Track, Adventure, Camp — each showing the
   gauges that matter for that context, with sourced warning thresholds.
-- **Live zoned gauges** — RPM, boost, air/fuel, and load as green/yellow/red
+- **Live zoned gauges** — RPM, MAF, air/fuel, and load as green/yellow/red
   bars (tachometer-style), plus a coolant trend line. Design backed by
   automotive gauge research.
 - **Full diagnostics** — read/pending/permanent/readiness codes, freeze frame,
@@ -78,24 +78,37 @@ on-device.
 
 ## Honest limitations
 
-- **Highway USB stability:** under sustained high-speed driving (electrical
-  noise, heat, vibration), the USB OBD adapter can drop its connection. The
-  software detects this, shows `--`, and attempts to recover (including
-  re-scanning for a re-enumerated adapter), but on this hardware a physical
-  drop can't always be prevented. A more robust hub / secured wiring — or an
-  ESP32 dedicated as the OBD reader feeding the Pi — is the planned fix.
+- **Hardware limitation — Raspberry Pi Zero 2W USB (known blocker):** This
+  project currently runs on a Raspberry Pi Zero 2W, whose single shared USB
+  controller cannot reliably sustain the USB-serial (FTDI) connection to the
+  OBD-II adapter under real driving conditions. The connection establishes,
+  then drops with continuous kernel-level USB errors
+  (`ftdi_sio ttyUSB0: failed to get modem status: -71`), which no software
+  change can fix — the failure is at the USB hardware layer, below the
+  application. This was isolated methodically: the adapter, cable, and powered
+  hub were all verified fully working when connected to a laptop (they connect
+  and stream data reliably), and the application code connects cleanly in
+  isolated tests when no other process holds the port. The bottleneck is
+  specifically the Zero 2W's USB hardware. **Recommended fix: run this on a
+  Raspberry Pi 4**, which has dedicated USB controllers — the application code
+  runs unchanged. An ESP32-based CAN reader is an alternative but requires
+  separate firmware and may not work on vehicles using CAN-FD.
+
+- **Boost gauge → MAF airflow:** The test vehicles do not expose manifold/intake
+  pressure (OBD-II PID 0x0B) over the standard protocol. Since boost is derived
+  as manifold pressure minus barometric pressure, true boost (PSI) cannot be
+  calculated on these cars with a standard adapter. The gauge instead displays
+  MAF (mass air flow, g/s) — a supported, measured value that is the best
+  available indicator of turbo activity, since airflow rises sharply when the
+  turbo spools. Real measured data, not a fabricated or estimated number.
+
 - **Virtual dyno is an estimate**, not a calibrated dyno reading.
-- **The ML model is in its learning phase** — collecting data now; anomaly
-  detection goes live after training on enough real driving.
-- **Some PIDs aren't supported on every car** and honestly show `--`.
-- **Boost gauge → MAF:** The test vehicles do not expose manifold/intake
-  pressure (OBD-II PID 0x0B) over the standard protocol, and boost is derived
-  as manifold pressure minus barometric pressure — so true boost (PSI) cannot
-  be calculated on these cars via a standard adapter. Instead, the gauge shows
-  MAF (mass air flow, g/s), a supported measured value that is the best
-  available indicator of turbo activity: airflow rises sharply when the turbo
-  spools. This keeps the gauge honest and real rather than showing a fabricated
-  or estimated number.
+
+- **ML anomaly detection is in its data-collection phase.** The device logs
+  clean engine-running snapshots during driving to build a "normal" dataset.
+  The Isolation Forest model activates only after training on enough real,
+  varied driving data — anomaly detection is not yet live. (Data collection is
+  also gated by the connection stability issue above.)
 
 ## Setup
 
@@ -107,8 +120,6 @@ on-device.
    (the pip version bundles a broken SDL on this hardware).
 3. To train the ML model (laptop only): `pip install -r requirements-train.txt`
 4. Run `python3 main_ui.py`, or install the systemd service to boot on startup.
-
-## License
 
 ## License
 
