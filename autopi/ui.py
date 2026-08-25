@@ -385,12 +385,13 @@ class UI:
                           for k in ("stft_b1", "ltft_b1", "stft_b2", "ltft_b2"))
         o2_missing = not isinstance(health["o2"], (int, float))
         if all_missing and o2_missing:
-            self.diag_screen.set_message("FUEL SYSTEM", [
-                "--- NOT CONNECTED ---",
-                "No live fuel data.",
-                "",
-                "Plug into the car's OBD port and",
-                "start the engine, then try again."])
+            if self._active_diag == ("fuel", None):
+                self.diag_screen.set_message("FUEL SYSTEM", [
+                    "--- NOT CONNECTED ---",
+                    "No live fuel data.",
+                    "",
+                    "Plug into the car's OBD port and",
+                    "start the engine, then try again."])
             return
         def fmt(label, val):
             return "  " + label.ljust(10) + ": " + (str(val) + "%" if isinstance(val, (int, float)) else "--")
@@ -430,7 +431,11 @@ class UI:
                         body.extend(self._wrap_line(chunk, 60))
             except Exception:
                 pass
-        self.diag_screen.set_message("FUEL SYSTEM", body)
+        # Only write to the screen if FUEL is STILL the active screen. A late-
+        # finishing background thread must not overwrite a screen the user has
+        # since navigated away from (fixes the FUEL/REPORT flip-flop race).
+        if self._active_diag == ("fuel", None):
+            self.diag_screen.set_message("FUEL SYSTEM", body)
         
     def _open_report(self):
         self._active_diag = ("report", None)
