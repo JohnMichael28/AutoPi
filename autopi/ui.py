@@ -10,6 +10,8 @@ from autopi.face_state import FaceState
 from autopi.bar_gauge import BarGauge
 from autopi.snapshot_thread import SnapshotThread
 from autopi.data_logger import DataLogger
+from autopi.warning_advisor import WarningAdvisor
+from autopi.warning_log import WarningLog
 
 # Per-mode stat bars (researched from AEM/pro dash systems).
 # Format: (label, data_key, unit, warn_threshold, warn_direction)
@@ -88,6 +90,11 @@ class UI:
                 ai_ok = False
         self.boot.set_status(obd_ok, ai_ok)
         self.decider = FaceState()
+        self.advisor = WarningAdvisor()      # sourced rule-based warnings
+        self._active_warnings = []           # current one-line warnings
+        self._warn_streak = 0                # (kept, harmless)
+        self._warn_log = WarningLog()        # timestamped warning history
+        self._warn_streak = 0                # debounce auto-surfacing
         
         ml_ready = os.path.exists("models/anomaly_model.joblib")
         self.boot.set_status(obd_ok, ai_ok, ml_ready)
@@ -128,7 +135,6 @@ class UI:
         
         self._alert_streak = 0      # consecutive knock alerts before auto-popping
         
-        self._snapshotter = SnapshotThread(data_provider, interval=0.75)
         # Diagnostics: reuse the DiagnosticReader models, render on touch.
         from autopi.diag_screen import DiagScreen
         from autopi.diagnostics import (FreezeFrameReader, PendingCodesReader,
@@ -298,6 +304,8 @@ class UI:
             self.menu = "DIAGNOSTICS"; self.terminal.selected = 0
         elif choice == "LIVE GRAPHS":
             self.state = "livegraphs"
+        elif choice == "WARNINGS":
+            self._show_warnings()
         elif choice == "VIRTUAL DYNO":
             run = self.data.get_dyno_run()
             self.dyno.clear()
@@ -436,6 +444,33 @@ class UI:
         # since navigated away from (fixes the FUEL/REPORT flip-flop race).
         if self._active_diag == ("fuel", None):
             self.diag_screen.set_message("FUEL SYSTEM", body)
+            
+    def _show_warnings(self):
+        # Show current warnings PLUS this drive's timestamped history, so you
+        # can review at a safe stop exactly what happened and when - warnings
+        # that cleared while driving are still here with their timestamps.
+        body = []
+        if self._active_warnings:
+            body.append("--- ACTIVE NOW ---")
+            body.append("")
+            for w in self._active_warnings:
+                body.extend(self._wrap_line("* " + w, 44))
+                body.append("")
+        history = self._warn_log.session_entries()
+        if history:
+            body.append("--- THIS DRIVE (newest first) ---")
+            body.append("")
+            for stamp, w in history:
+                # show HH:MM:SS (drop the date to save space) + the warning
+                clock = stamp.split(" ")[1] if " " in stamp else stamp
+                body.append(clock)
+                body.extend(self._wrap_line("  " + w, 42))
+                body.append("")
+        if not body:
+            body = ["No warnings this drive.", "", "All systems nominal."]
+        self._active_diag = ("warnings", None)
+        self.diag_screen.set_message("WARNINGS", body)
+        self.state = "diag"
         
     def _open_report(self):
         self._active_diag = ("report", None)
@@ -569,33 +604,21 @@ class UI:
                     threading.Thread(target=self._build_fuel_screen, daemon=True).start()
                 elif kind == "report":
                     self._build_report()
+                elif kind == "warnings":
+                    self._show_warnings()
                 # readers NOT auto-refreshed - they read once (codes don't
                 # change while viewing, and re-reading collides with the poller)
         
-        # Auto-surface the tuning monitor if live knock is detected, from the
-        # face or menu. This is the "something's wrong in the engine" alarm.
-        # Gated to face/menu so it won't yank you out of a diagnostic read.
+        # Run the sourced WarningAdvisor on the latest snapshot every cycle on
+        # the face/menu. This updates the one-line warning shown on the face,
+        # the face's issue-light color, and the timestamped warning log. It
+        # does NOT hijack the screen - the full list lives in the WARNINGS tab,
+        # which the driver opens when they choose to.
         if self.state in ("face", "menu"):
             snap = self._snapshotter.latest()
-            timing = self._as_number(snap.get("timing", "--"))
-            rpm = self._as_number(snap.get("rpm", "--"))
-            throttle = self._as_number(snap.get("throttle", "--"))
-            # Only evaluate when we have REAL data - skip garbage/disconnect
-            # readings (timing/rpm of 0 = no data, not a real knock event).
-            if rpm > 0 and timing != 0:
-                subaru = self._tuner.read_subaru_knock()
-                alerts = self._tuner.evaluate(timing, self._last_timing_watch,
-                                              rpm, throttle, subaru)
-                self._last_timing_watch = timing
-                # Require 3 consecutive alerts before popping - a single noisy
-                # reading (common on a flaky connection) won't false-alarm.
-                if alerts:
-                    self._alert_streak += 1
-                else:
-                    self._alert_streak = 0
-                if self._alert_streak >= 3:
-                    self.state = "tuning"
-                    self._alert_streak = 0
+            if self._as_number(snap.get("rpm", "--")) > 0:   # only with real data
+                self._active_warnings = self.advisor.check(snap)
+                self._warn_log.record(self._active_warnings)   # timestamped log
 
         # Voice: when transcription finishes, route to AI and show the answer.
         if self.state == "voice" and self._voice is not None:
@@ -637,10 +660,19 @@ class UI:
     def draw(self, surface):
         snap = self._snapshotter.latest()
         mode = getattr(self.data, "mode", snap.get("mode", "highway"))
-        mood = self.decider.decide(
-            coolant_temp=snap["coolant_temp"], has_codes=snap["has_codes"],
-            voltage=snap["voltage"], mode=mode, needs_gas=snap["needs_gas"],
-            fuel_flag=self.data.fuel_mood_flag() if hasattr(self.data, "fuel_mood_flag") else None)
+        # The WarningAdvisor is the single source of truth for the issue light:
+        # if it has active warnings, its severity sets the face color (red/
+        # yellow), and the WARNINGS screen lists exactly those same warnings -
+        # face and list can never disagree. If no warnings, fall back to the
+        # normal mode/state color from FaceState.
+        advisor_mood = self.advisor.face_mood(self._active_warnings)
+        if advisor_mood is not None:
+            mood = advisor_mood
+        else:
+            mood = self.decider.decide(
+                coolant_temp=snap["coolant_temp"], has_codes=snap["has_codes"],
+                voltage=snap["voltage"], mode=mode, needs_gas=snap["needs_gas"],
+                fuel_flag=self.data.fuel_mood_flag() if hasattr(self.data, "fuel_mood_flag") else None)
         self.face.set_mood(mood)
 
         if self.state == "boot":
@@ -726,10 +758,28 @@ class UI:
             lbl = pygame.font.SysFont("consolas", 26, bold=True).render(
                 MOODS[self.face.mood]["label"], True, text_color)
             surface.blit(lbl, (self.width//2 - lbl.get_width()//2, 442))
-            # menu hint
-            hint = pygame.font.SysFont("consolas", 16).render(
-                "TAP to open menu", True, (90, 90, 100))
-            surface.blit(hint, (10, 462))
+            # ONE-LINE warning on the face: show the top (most important)
+            # warning as a single line. Full list lives in the WARNINGS tab.
+            if self._active_warnings:
+                warn_font = pygame.font.SysFont("consolas", 18, bold=True)
+                top = self._active_warnings[0]
+                if len(top) > 52:
+                    top = top[:49] + "..."
+                wline = warn_font.render(top, True, (255, 215, 40))
+                surface.blit(wline, (self.width//2 - wline.get_width()//2, 410))
+                if len(self._active_warnings) > 1:
+                    more = pygame.font.SysFont("consolas", 14).render(
+                        "+" + str(len(self._active_warnings) - 1) + " more - see WARNINGS",
+                        True, (150, 150, 90))
+                    surface.blit(more, (self.width//2 - more.get_width()//2, 464))
+                else:
+                    hint = pygame.font.SysFont("consolas", 16).render(
+                        "TAP to open menu", True, (90, 90, 100))
+                    surface.blit(hint, (10, 464))
+            else:
+                hint = pygame.font.SysFont("consolas", 16).render(
+                    "TAP to open menu", True, (90, 90, 100))
+                surface.blit(hint, (10, 462))
 
     def _draw_waiting(self, surface, title, message):
         # Styled "waiting for data" placeholder screen.

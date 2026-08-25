@@ -8,7 +8,7 @@ TERM_BG = (8, 14, 8)
 # The menu structure (what a mechanic/tuner navigates)
 MENUS = {
     "MAIN": ["DASHBOARDS", "LIVE GRAPHS", "VIRTUAL DYNO", "DIAGNOSTICS",
-             "FUEL", "TUNING MONITOR", "ENGINEER MODE", "REPORT",
+             "FUEL", "WARNINGS", "TUNING MONITOR", "ENGINEER MODE", "REPORT",
              "BACK TO FACE"],
     "DASHBOARDS": ["EVERYDAY HIGHWAY", "TRACK MODE", "ADVENTURE MODE",
                    "CAMP MODE", "< BACK"],

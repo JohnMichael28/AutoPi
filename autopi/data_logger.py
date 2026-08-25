@@ -39,20 +39,19 @@ class DataLogger:
                 csv.writer(f).writerow(self.FIELDS)
 
     def log(self, snapshot):
-        # Append one row IF the engine is running and the row is complete.
-        # Skips disconnected / engine-off / partial rows so the training set
-        # stays clean (sourced: preprocessing/clean data is stage 1).
+        # Append one row if the engine is running. Missing fields ('--') are
+        # written as empty cells rather than causing the whole row to be
+        # dropped - some cars don't support every PID (e.g. intake_temp on this
+        # Subaru), and discarding every row over one missing sensor means we
+        # log nothing. Training handles empty cells (drop/impute) downstream.
         rpm = snapshot.get("rpm", "--")
         if not isinstance(rpm, (int, float)) or rpm <= 0:
             return                      # engine off or no data - don't log
         row = [time.strftime("%Y-%m-%d %H:%M:%S")]
         for key in self.FIELDS[1:]:     # skip 'timestamp', already added
             value = snapshot.get(key, "--")
-            # Only log fully-numeric rows; a single '--' means skip the row,
-            # so we never train on missing values.
-            if not isinstance(value, (int, float)):
-                return
-            row.append(value)
+            # Write the number if present, else an empty cell (not a skip).
+            row.append(value if isinstance(value, (int, float)) else "")
         try:
             with open(self.__path, "a", newline="") as f:
                 csv.writer(f).writerow(row)
