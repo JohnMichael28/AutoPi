@@ -29,7 +29,7 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
 - **Tuning monitor** — live knock/timing watch with debounced alarms.
 - **Offline voice assistant** — push-to-talk questions answered by a local AI,
   using your car's live data. Fully offline speech recognition (Vosk).
-- **ML anomaly detection** (in learning phase — see below).
+- **ML anomaly detection** (in data-collection phase — see below).
 
 ## The ML system
 
@@ -59,40 +59,48 @@ on-device.
 
 ## Hardware
 
-- Raspberry Pi Zero 2W
+- Raspberry Pi 4 Model B (4GB)
 - 5" Elecrow HDMI capacitive touchscreen (800×480)
 - OBDLink EX USB OBD-II adapter
 - USB audio adapter + mic (voice)
-- Powered USB hub, 12V→5V buck converter, fuse tap
+- 12V→5V buck converter, fuse tap (in-vehicle power)
 
 ## Architecture
 
 - **Model / View / Adapter** separation. The car is accessed only through a
   `Vehicle` class; the UI reads cached snapshots and never blocks on OBD I/O.
 - **Background threading** — OBD reads and the ML logger run off the 60fps
-  render loop. Blocking work never touches the UI thread.
+  render loop. Blocking work never touches the UI thread. All OBD access is
+  serialized through a lock, since python-OBD is not thread-safe.
 - **Tiered polling** — fast-changing PIDs read every cycle, slow ones rotated
   in, so no single read cycle overloads the connection.
 - **Tiered AI fallback** — local Ollama when reachable, graceful offline
   behavior otherwise. The device never pretends to have data it doesn't.
+- **Console/KMSDRM display** — runs as a full-screen pygame app on the Pi
+  console (boot-to-console + autologin), drawing directly via KMSDRM with no
+  desktop environment.
+
+## Engineering notes: the connection-stability investigation
+
+Early development ran on a Raspberry Pi Zero 2W and hit persistent OBD
+connection drops under real driving. The root cause was isolated methodically:
+
+- The adapter, cable, and hub were verified fully working on a laptop (connected
+  and streamed data reliably).
+- The application code connected cleanly in isolated single-threaded tests.
+- Kernel logs on the Zero 2W showed continuous USB errors
+  (`ftdi_sio ttyUSB0: failed to get modem status: -71`) — a hardware-layer
+  failure of the Zero 2W's single shared USB controller, below the application.
+
+**Resolution:** migrating to a Raspberry Pi 4 (which has dedicated USB
+controllers) eliminated the USB errors entirely — the same code, adapter, and
+30-read polling test that failed on the Zero 2W ran flawlessly with a clean
+kernel log. A second, software-level cause was also fixed: python-OBD is not
+thread-safe, so simultaneous access from the background snapshot thread and
+main-thread diagnostic reads was serialized behind a lock. Together these
+produced a stable live connection.
 
 ## Honest limitations
-
-- **Hardware limitation — Raspberry Pi Zero 2W USB (known blocker):** This
-  project currently runs on a Raspberry Pi Zero 2W, whose single shared USB
-  controller cannot reliably sustain the USB-serial (FTDI) connection to the
-  OBD-II adapter under real driving conditions. The connection establishes,
-  then drops with continuous kernel-level USB errors
-  (`ftdi_sio ttyUSB0: failed to get modem status: -71`), which no software
-  change can fix — the failure is at the USB hardware layer, below the
-  application. This was isolated methodically: the adapter, cable, and powered
-  hub were all verified fully working when connected to a laptop (they connect
-  and stream data reliably), and the application code connects cleanly in
-  isolated tests when no other process holds the port. The bottleneck is
-  specifically the Zero 2W's USB hardware. **Recommended fix: run this on a
-  Raspberry Pi 4**, which has dedicated USB controllers — the application code
-  runs unchanged. An ESP32-based CAN reader is an alternative but requires
-  separate firmware and may not work on vehicles using CAN-FD.
 
 - **Boost gauge → MAF airflow:** The test vehicles do not expose manifold/intake
   pressure (OBD-II PID 0x0B) over the standard protocol. Since boost is derived
@@ -107,19 +115,20 @@ on-device.
 - **ML anomaly detection is in its data-collection phase.** The device logs
   clean engine-running snapshots during driving to build a "normal" dataset.
   The Isolation Forest model activates only after training on enough real,
-  varied driving data — anomaly detection is not yet live. (Data collection is
-  also gated by the connection stability issue above.)
+  varied driving data — anomaly detection is not yet live.
 
 ## Setup
 
 1. Copy `config.example.json` to `config.json` and set your values (OBD port,
    Ollama IP if using the AI, etc.).
-2. Install dependencies: `pip install -r requirements.txt`
-   On the Pi, install pygame via apt instead of pip:
-   `sudo apt install python3-pygame`
-   (the pip version bundles a broken SDL on this hardware).
-3. To train the ML model (laptop only): `pip install -r requirements-train.txt`
-4. Run `python3 main_ui.py`, or install the systemd service to boot on startup.
+2. Install system packages on the Pi (pygame via apt, not pip — the pip build
+   bundles a broken SDL): `sudo apt install python3-pygame python3-full libportaudio2`
+3. Create a venv with system packages and install requirements:
+   `python3 -m venv venv --system-site-packages && source venv/bin/activate && pip install -r requirements.txt`
+4. Download the Vosk speech model into the project directory.
+5. Run on the Pi console (boot-to-console + autologin) so KMSDRM can own the
+   display. Auto-launch on login via `~/.bash_profile` (tty1 only).
+6. To train the ML model (laptop only): `pip install -r requirements-train.txt`
 
 ## License
 

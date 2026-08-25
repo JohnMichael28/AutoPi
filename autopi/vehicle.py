@@ -87,6 +87,8 @@ class Vehicle:
                             "stft_b1", "ltft_b1", "o2_b1s2"]
         self.__slow_index = 0
         self.__dead_reads = 0     # consecutive all-failed read cycles
+        import threading
+        self.__lock = threading.Lock()   # serialize OBD access (not thread-safe)
     def connect(self):
         # Open the connection. fast=False + a short timeout are the documented
         # fixes for Raspberry Pi/ELM327 query hangs (python-OBD issue #149 and
@@ -133,18 +135,20 @@ class Vehicle:
         return False
 
     def read_value(self, command):
-        # Query one command. If the connection is already known-dead, return
-        # immediately (don't wait out the ~10s serial-port timeout on a dropped
-        # adapter). On any failure, mark dead so subsequent reads skip fast.
+        # Query one command, serialized with a lock because python-OBD is not
+        # thread-safe: the background snapshot thread and any main-thread
+        # diagnostic read must take turns on the single serial port, or they
+        # collide and cause "Device disconnected while reading".
         if self.__connection is None:
             return None
-        try:
-            response = self.__connection.query(command)
-            if response is None or response.is_null():
+        with self.__lock:
+            try:
+                response = self.__connection.query(command)
+                if response is None or response.is_null():
+                    return None
+                return response.value
+            except Exception:
                 return None
-            return response.value
-        except Exception:
-            return None
 
     def close(self):
         if self.__connection is not None:
@@ -212,16 +216,16 @@ class Vehicle:
         return self.read_value(obd.commands.GET_DTC)
     
     def clear_dtcs(self):
-        # Mode 04 - clears stored DTCs AND freeze-frame data. Per OBD-II spec,
-        # permanent (Mode 0A) codes are NOT cleared by this; they clear only
-        # after the monitor re-runs and passes. Returns True if the command sent.
+        # Mode 04 - clears stored DTCs AND freeze-frame data. Locked so it can't
+        # collide with the snapshot thread on the serial port.
         if self.__connection is None:
             return False
-        try:
-            self.__connection.query(obd.commands.CLEAR_DTC)
-            return True
-        except Exception:
-            return False
+        with self.__lock:
+            try:
+                self.__connection.query(obd.commands.CLEAR_DTC)
+                return True
+            except Exception:
+                return False
 
     def read_current(self):
         # is_connected() is known to report True even when the car connection is
