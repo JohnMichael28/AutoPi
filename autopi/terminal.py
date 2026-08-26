@@ -109,25 +109,73 @@ class Terminal:
         surface.blit(self.font_big.render(title, True, TERM_GREEN), (40, 30))
         pygame.draw.line(surface, TERM_DIM, (40, 80), (self.width - 40, 80), 2)
 
-        y = 100
-        for i, item in enumerate(items):
+        # Scrollable window: only draw rows that fit between the header (y=100)
+        # and the footer line (height-44). Scroll so the selected row is always
+        # visible - prevents the menu overlapping the bottom instructions when
+        # there are more items than fit on screen.
+        top = 100
+        row_h = 38
+        bottom_limit = self.height - 52          # leave room for the footer
+        visible = (bottom_limit - top) // row_h  # how many rows fit
+        # Compute scroll offset so 'selected' stays in view.
+        offset = 0
+        if self.selected >= visible:
+            offset = self.selected - visible + 1
+        offset = max(0, min(offset, max(0, len(items) - visible)))
+
+        y = top
+        for i in range(offset, min(offset + visible, len(items))):
+            item = items[i]
             if i == self.selected:
                 pygame.draw.rect(surface, (20, 60, 25), (40, y - 2, self.width - 80, 34))
                 prefix = "> "; color = TERM_GREEN
             else:
                 prefix = "  "; color = TERM_DIM
             surface.blit(self.font.render(prefix + item, True, color), (55, y))
-            y += 38
+            y += row_h
 
-        if (frame // 30) % 2 == 0:
-            surface.blit(self.font.render("_", True, TERM_GREEN), (55, y + 4))
+        # Scroll indicators (up/down arrows) when there's more above/below.
+        small = pygame.font.SysFont("consolas", 16, bold=True)
+        if offset > 0:
+            surface.blit(small.render("^ more", True, TERM_DIM), (self.width - 110, 84))
+        if offset + visible < len(items):
+            surface.blit(small.render("v more", True, TERM_DIM),
+                         (self.width - 110, self.height - 68))
+
+        # Remember the current window so row_at() maps taps correctly.
+        self._view_offset = offset
+        self._view_visible = visible
+        self._row_h = row_h
+        self._row_top = top
 
         pygame.draw.line(surface, TERM_DIM, (40, self.height - 44),
                          (self.width - 40, self.height - 44), 1)
         foot = pygame.font.SysFont("consolas", 15).render(
-            "TAP an item to open   -   hold corner to exit", True, TERM_DIM)
+            "TAP an item   -   swipe/tap edges to scroll   -   hold corner to exit",
+            True, TERM_DIM)
         surface.blit(foot, (40, self.height - 34))
         self.draw_scanlines(surface)
+
+    def move(self, direction, count):
+        self.selected = (self.selected + direction) % count
+
+    def row_at(self, y, count):
+        """Return the menu index at pixel-y within the CURRENT scroll window,
+        or None if outside the rows. Accounts for the scroll offset so taps map
+        to the right item even when scrolled. O(1)."""
+        top = getattr(self, "_row_top", 100)
+        row_h = getattr(self, "_row_h", 38)
+        offset = getattr(self, "_view_offset", 0)
+        visible = getattr(self, "_view_visible", count)
+        if y < top:
+            return None
+        row_in_view = (y - top) // row_h
+        if row_in_view < 0 or row_in_view >= visible:
+            return None
+        index = offset + row_in_view
+        if 0 <= index < count:
+            return index
+        return None
 
     def move(self, direction, count):
         self.selected = (self.selected + direction) % count

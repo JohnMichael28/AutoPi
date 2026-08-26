@@ -242,10 +242,16 @@ class UI:
             self.boot.done = True
         elif self.state == "menu":
             items = MENUS[self.menu]
-            index = self.terminal.row_at(y, len(items))
-            if index is not None:
-                self.terminal.selected = index
-                self._menu_select(items[index])
+            # Tap the top edge = scroll up a step; bottom edge = scroll down.
+            if y <= 92:
+                self.terminal.move(-1, len(items))
+            elif y >= self.height - 66:
+                self.terminal.move(1, len(items))
+            else:
+                index = self.terminal.row_at(y, len(items))
+                if index is not None:
+                    self.terminal.selected = index
+                    self._menu_select(items[index])
         elif self.state == "dyno":
             if y >= 420 and x <= 180:
                 self.data.arm_dyno()          # START button (bottom-left)
