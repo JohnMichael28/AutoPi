@@ -12,6 +12,7 @@ from autopi.snapshot_thread import SnapshotThread
 from autopi.data_logger import DataLogger
 from autopi.warning_advisor import WarningAdvisor
 from autopi.warning_log import WarningLog
+from autopi.anomaly_feed import AnomalyFeed
 
 # Per-mode stat bars (researched from AEM/pro dash systems).
 # Format: (label, data_key, unit, warn_threshold, warn_direction)
@@ -57,6 +58,8 @@ class UI:
         self._ai_client = ai_client
         self._report_view = report_view
         self._data_logger = DataLogger()      # starts the ML data collection
+        self._anomaly = AnomalyFeed()   # ML advisory (soft signal, not alarm)
+        self._anomaly_result = {"severity": "ok"}
         self._snapshotter = SnapshotThread(data_provider, interval=0.75,
                                            logger=self._data_logger)
         self._ai_router = ai_router
@@ -201,7 +204,7 @@ class UI:
                 else: self.menu = "MAIN"; self.terminal.selected = 0
             elif key == pygame.K_RETURN:
                 self._menu_select(items[self.terminal.selected])
-        elif self.state in ("livegraphs", "dyno", "waiting", "diag", "engineer", "tuning"):
+        elif self.state in ("livegraphs", "dyno", "waiting", "diag", "engineer", "tuning", "confirm_clear"):
             if key == pygame.K_ESCAPE:
                 self.state = "menu"
                 
@@ -237,7 +240,18 @@ class UI:
             return
         self._quit_started = None
         x, y = pos
-
+        
+        if self.state == "confirm_clear":
+            # CANCEL is the big safe button (left); CLEAR is the small red one
+            # (right). Only a tap squarely inside CLEAR wipes codes; anything
+            # else cancels, so a stray tap can never clear.
+            cx, cy, cw, ch = self.width - 250, self.height - 90, 210, 60
+            if cx <= x <= cx + cw and cy <= y <= cy + ch:
+                self._clear_codes()
+            else:
+                self.state = "menu"
+            return
+        
         if self.state == "boot":
             self.boot.done = True
         elif self.state == "menu":
@@ -325,7 +339,7 @@ class UI:
             self.diag_screen.open(self._readers[choice])
             self.state = "diag"
         elif choice == "CLEAR CODES":
-            self._clear_codes()
+            self.state = "confirm_clear"
         elif choice == "EVERYDAY HIGHWAY":
             self.data.mode = "highway"; self.state = "face"
         elif choice == "TRACK MODE":
@@ -352,11 +366,21 @@ class UI:
         if self._vehicle is None:
             self.diag_screen.set_message("READ CODES", ["No vehicle connected."])
             self.state = "diag"; return
+        read_failed = False
         try:
             codes = self._vehicle.get_dtcs() or []
         except Exception:
             codes = []
-        if not codes:
+            read_failed = True
+        if read_failed:
+            body = ["--- READ FAILED ---", "",
+                    "Could not read codes from the car.",
+                    "The adapter was busy or dropped the query.",
+                    "",
+                    "This is NOT 'no codes' - if the CEL is on,",
+                    "the code is there. Try again with the",
+                    "engine running."]
+        elif not codes:
             body = ["No stored trouble codes.", "", "Engine is clean."]
         else:
             body = ["Stored trouble codes:", ""]
@@ -367,6 +391,33 @@ class UI:
         self.diag_screen.set_message("READ CODES", body)
         self.state = "diag"
 
+    def _draw_confirm_clear(self, surface):
+        surface.fill((8, 14, 8))
+        title = pygame.font.SysFont("consolas", 24, bold=True).render(
+            "CLEAR TROUBLE CODES?", True, (255, 215, 40))
+        surface.blit(title, (40, 40))
+        pygame.draw.line(surface, (30, 120, 55), (40, 82),
+                         (self.width - 40, 82), 2)
+        body = pygame.font.SysFont("consolas", 19)
+        for i, ln in enumerate([
+                "This erases stored codes AND freeze-frame",
+                "data from the car's computer.",
+                "",
+                "Only do this AFTER you've noted the codes",
+                "and fixed the problem. Permanent codes",
+                "won't clear until the monitor re-runs."]):
+            surface.blit(body.render(ln, True, (57, 255, 120)), (40, 100 + i * 28))
+        btn = pygame.font.SysFont("consolas", 22, bold=True)
+        pygame.draw.rect(surface, (57, 255, 120), (40, self.height - 90, 260, 60))
+        surface.blit(btn.render("CANCEL", True, (8, 14, 8)), (120, self.height - 74))
+        pygame.draw.rect(surface, (200, 50, 50),
+                         (self.width - 250, self.height - 90, 210, 60))
+        surface.blit(btn.render("CLEAR", True, (255, 255, 255)),
+                     (self.width - 180, self.height - 74))
+        hint = pygame.font.SysFont("consolas", 14).render(
+            "Tap CANCEL or anywhere else to keep your codes", True, (30, 120, 55))
+        surface.blit(hint, (40, self.height - 22))
+        
     def _clear_codes(self):
         # Mode 04 - clears stored DTCs + freeze frame. NOT permanent codes.
         if self._vehicle is None:
@@ -455,7 +506,7 @@ class UI:
         # Show current warnings PLUS this drive's timestamped history, so you
         # can review at a safe stop exactly what happened and when - warnings
         # that cleared while driving are still here with their timestamps.
-        body = []
+        body = []        
         if self._active_warnings:
             body.append("--- ACTIVE NOW ---")
             body.append("")
@@ -625,6 +676,7 @@ class UI:
             if self._as_number(snap.get("rpm", "--")) > 0:   # only with real data
                 self._active_warnings = self.advisor.check(snap)
                 self._warn_log.record(self._active_warnings)   # timestamped log
+                self._anomaly_result = self._anomaly.push(snap)   # ML advisory
 
         # Voice: when transcription finishes, route to AI and show the answer.
         if self.state == "voice" and self._voice is not None:
@@ -714,6 +766,10 @@ class UI:
             self._draw_waiting(surface, self._waiting_title, self._waiting_msg)
             return
         
+        if self.state == "confirm_clear":
+            self._draw_confirm_clear(surface)
+            return
+        
         if self.state == "diag":
             self.diag_screen.draw(surface)
             return
@@ -764,6 +820,22 @@ class UI:
             lbl = pygame.font.SysFont("consolas", 26, bold=True).render(
                 MOODS[self.face.mood]["label"], True, text_color)
             surface.blit(lbl, (self.width//2 - lbl.get_width()//2, 442))
+            # ML advisory line - shows only when the rule-based advisor is quiet
+            # (rules are the real alarm; this is the soft "unusual" signal).
+            ml = self._anomaly_result
+            if not self._active_warnings and ml.get("severity", "ok") != "ok":
+                sev = ml["severity"]
+                culprits = ml.get("culprits", [])
+                top = culprits[0][0].upper() if culprits else "readings"
+                if sev == "elevated":
+                    ml_color = (255, 140, 40)
+                    ml_text = "ML: sustained anomaly - " + top
+                else:
+                    ml_color = (200, 200, 90)
+                    ml_text = "ML: readings unusual"
+                ml_font = pygame.font.SysFont("consolas", 16, bold=True)
+                ml_surf = ml_font.render(ml_text, True, ml_color)
+                surface.blit(ml_surf, (self.width//2 - ml_surf.get_width()//2, 410))
             # ONE-LINE warning on the face: show the top (most important)
             # warning as a single line. Full list lives in the WARNINGS tab.
             if self._active_warnings:
@@ -959,7 +1031,8 @@ def run_ui(data_provider, vehicle=None, ai_client=None, report_view=None,
         touch_cfg = json.load(f).get("touch", {})
     touch = None
     try:
-        touch = TouchReader(touch_cfg.get("device", "/dev/input/event3"), 800, 480)
+        touch = TouchReader(touch_cfg.get("device", "/dev/input/event3"), 800, 480,
+                            calib=touch_cfg.get("calibration", {}))
     except Exception as err:
         print("Touch unavailable:", err)   # keyboard still works
 
@@ -976,9 +1049,14 @@ def run_ui(data_provider, vehicle=None, ai_client=None, report_view=None,
         if touch is not None:
             for kind, pos in touch.poll():
                 if kind == "down":
-                    ui.handle_touch_down(pos)
+                    # Start the quit-hold timer only (coords can be stale on
+                    # 'down' with this panel; the quit corner is a large zone
+                    # so that's fine). Do NOT select menu items on down.
+                    if ui._in_quit_zone(pos):
+                        ui._quit_started = time.monotonic()
                 elif kind == "up":
-                    ui.handle_touch_up(pos)
+                    ui._quit_started = None
+                    ui.handle_touch_down(pos)   # act on 'up' - coords settled
         if ui.check_quit_hold():
             running = False
         ui.update(dt)

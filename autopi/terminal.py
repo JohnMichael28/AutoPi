@@ -176,15 +176,3 @@ class Terminal:
         if 0 <= index < count:
             return index
         return None
-
-    def move(self, direction, count):
-        self.selected = (self.selected + direction) % count
-    def row_at(self, y, count):
-        """Return the menu index at pixel-y, or None if outside the rows.
-        Rows start at y=100, each 38px tall (matches draw_menu). O(1)."""
-        if y < 100:
-            return None
-        index = (y - 100) // 38
-        if 0 <= index < count:
-            return index
-        return None

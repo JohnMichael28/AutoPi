@@ -9,6 +9,12 @@ TERM_DIM = (30, 120, 55)
 TERM_BG = (8, 14, 8)
 WARN_YELLOW = (255, 215, 40)
 
+# Max characters per line before wrapping. Sized for the 18px consolas body
+# font at x=24 on an 800px screen (~80 char hard limit); 58 leaves a margin so
+# nothing runs off the right edge - including long RAW DATA tuples like DTC
+# code+description, which previously were not wrapped at all.
+WRAP_W = 58
+
 
 class DiagScreen:
     def __init__(self, width, height):
@@ -35,6 +41,30 @@ class DiagScreen:
         self._thread = threading.Thread(target=self._background_read, daemon=True)
         self._thread.start()
 
+    def _format_result(self, result):
+        # Shared formatter for both the threaded and sync read paths. Wraps
+        # EVERY line (raw data included) so nothing overflows the screen width.
+        lines = [("--- RAW DATA ---", TERM_DIM)]
+        raw = result["raw"]
+        if raw is None:
+            lines.append(("Nothing reported.", TERM_GREEN))
+        elif isinstance(raw, dict):
+            for key in raw:
+                for chunk in self._wrap("  " + str(key) + ": " + str(raw[key]), WRAP_W):
+                    lines.append((chunk, TERM_GREEN))
+        elif isinstance(raw, list):
+            for item in raw:
+                for chunk in self._wrap("  " + str(item), WRAP_W):
+                    lines.append((chunk, TERM_GREEN))
+        else:
+            for chunk in self._wrap("  " + str(raw), WRAP_W):
+                lines.append((chunk, TERM_GREEN))
+        lines.append(("", TERM_GREEN))
+        lines.append(("--- PLAIN ENGLISH ---", TERM_DIM))
+        for chunk in self._wrap(result["plain_english"], WRAP_W):
+            lines.append((chunk, WARN_YELLOW))
+        return lines
+
     def _background_read(self):
         try:
             result = self._reader.report()
@@ -42,44 +72,12 @@ class DiagScreen:
             self._lines = [("Read failed:", TERM_DIM), (str(err), WARN_YELLOW)]
             self._loading = False
             return
-        lines = [("--- RAW DATA ---", TERM_DIM)]
-        raw = result["raw"]
-        if raw is None:
-            lines.append(("Nothing reported.", TERM_GREEN))
-        elif isinstance(raw, dict):
-            for key in raw:
-                lines.append(("  " + str(key) + ": " + str(raw[key]), TERM_GREEN))
-        elif isinstance(raw, list):
-            for item in raw:
-                lines.append(("  " + str(item), TERM_GREEN))
-        else:
-            lines.append(("  " + str(raw), TERM_GREEN))
-        lines.append(("", TERM_GREEN))
-        lines.append(("--- PLAIN ENGLISH ---", TERM_DIM))
-        for chunk in self._wrap(result["plain_english"], 62):
-            lines.append((chunk, WARN_YELLOW))
-        self._lines = lines
+        self._lines = self._format_result(result)
         self._loading = False
 
     def run_read(self):
         result = self._reader.report()
-        lines = [("--- RAW DATA ---", TERM_DIM)]
-        raw = result["raw"]
-        if raw is None:
-            lines.append(("Nothing reported.", TERM_GREEN))
-        elif isinstance(raw, dict):
-            for key in raw:
-                lines.append(("  " + str(key) + ": " + str(raw[key]), TERM_GREEN))
-        elif isinstance(raw, list):
-            for item in raw:
-                lines.append(("  " + str(item), TERM_GREEN))
-        else:
-            lines.append(("  " + str(raw), TERM_GREEN))
-        lines.append(("", TERM_GREEN))
-        lines.append(("--- PLAIN ENGLISH ---", TERM_DIM))
-        for chunk in self._wrap(result["plain_english"], 62):
-            lines.append((chunk, WARN_YELLOW))
-        self._lines = lines
+        self._lines = self._format_result(result)
         self._loading = False
 
     def set_message(self, title, body_lines):
@@ -87,6 +85,7 @@ class DiagScreen:
         # Section headers stay dim; the AI explanation block ("WHAT THIS MEANS"
         # / "PLAIN ENGLISH") is yellow; everything else green. Keeps color
         # meaning consistent across every screen: yellow = AI interpretation.
+        # Every line is wrapped so long content can't run off the right edge.
         self._title = title
         self._scroll = 0
         self._loading = False
@@ -104,7 +103,13 @@ class DiagScreen:
                     in_ai = False
                 colored.append((line, TERM_DIM))
             else:
-                colored.append((line, WARN_YELLOW if in_ai else TERM_GREEN))
+                color = WARN_YELLOW if in_ai else TERM_GREEN
+                # Wrap long lines; keep short ones as-is (preserves blank lines).
+                if len(line) > WRAP_W:
+                    for chunk in self._wrap(line, WRAP_W):
+                        colored.append((chunk, color))
+                else:
+                    colored.append((line, color))
         self._lines = colored
 
     @staticmethod
@@ -120,7 +125,7 @@ class DiagScreen:
                 current = word
         if current:
             lines.append(current)
-        return lines
+        return lines if lines else [""]
 
     def scroll(self, direction):
         self._scroll = max(0, self._scroll + direction)

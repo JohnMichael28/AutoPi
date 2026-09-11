@@ -212,8 +212,23 @@ class Vehicle:
         return self.read_number(cmd) if cmd is not None else None
 
     def get_dtcs(self):
-        # Get trouble codes (list of (code, description) tuples), or empty
-        return self.read_value(obd.commands.GET_DTC)
+        # Get stored/confirmed trouble codes (Mode 03) - the ones that light
+        # the CEL. Retries because a flaky ELM327 read can return null on one
+        # query even with the light on, which is indistinguishable from "no
+        # codes". If EVERY attempt is null, raise so the UI says "read failed"
+        # instead of lying "engine clean". An empty list is a real "no codes".
+        if self.__connection is None:
+            raise IOError("no connection")
+        with self.__lock:
+            for attempt in range(3):
+                try:
+                    response = self.__connection.query(obd.commands.GET_DTC)
+                except Exception:
+                    response = None
+                if response is not None and not response.is_null():
+                    return response.value or []
+                time.sleep(0.3)
+        raise IOError("DTC read returned null on every attempt")
     
     def clear_dtcs(self):
         # Mode 04 - clears stored DTCs AND freeze-frame data. Locked so it can't

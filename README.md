@@ -4,9 +4,9 @@
 > and applied ML — from OBD-II protocol handling to on-device anomaly detection.
 
 A Raspberry Pi-powered, touchscreen car diagnostic device that reads live OBD-II
-data, explains it in plain English, and is learning to detect problems before
-they happen. Built around a Fallout-style terminal "guardian" that reacts to your
-car's health in real time.
+data, explains it in plain English, and detects problems before they happen.
+Built around a Fallout-style terminal "guardian" that reacts to your car's
+health in real time.
 
 Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
 (FA24 turbo).
@@ -29,13 +29,14 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
 - **Tuning monitor** — live knock/timing watch with debounced alarms.
 - **Offline voice assistant** — push-to-talk questions answered by a local AI,
   using your car's live data. Fully offline speech recognition (Vosk).
-- **ML anomaly detection** (in data-collection phase — see below).
+- **ML anomaly detection** — a trained Isolation Forest runs on-device and flags
+  readings that deviate from your car's learned normal (see below).
 
 ## The ML system
 
-The long-term goal is a model that learns *your specific car's* normal behavior
-and flags anomalies (fuel system drifting, knock developing, O2 sensor aging,
-coolant creeping, abnormal load) before they become failures.
+The goal is a model that learns *your specific car's* normal behavior and flags
+anomalies (fuel system drifting, knock developing, O2 sensor aging, coolant
+creeping, abnormal load) before they become failures.
 
 **Approach:** unsupervised anomaly detection with an Isolation Forest, chosen
 after reviewing the literature on vehicle/sensor anomaly detection. Isolation
@@ -45,17 +46,31 @@ alarms miss. Real-engine-data research (e.g. the EngineAD dataset) found simple
 classical methods competitive with or superior to deep learning for this task.
 
 **Three-phase pipeline:**
-1. **Collect** (current phase) — the device silently logs clean, engine-running
-   snapshots to CSV during normal driving, building a "normal" dataset.
-2. **Train** — offline on a laptop (`train_model.py`): scale features, fit the
-   Isolation Forest, compute per-feature baselines for interpretability, save
-   the model.
-3. **Deploy** — the trained model runs on the Pi for real-time inference, and
-   the guardian reacts when readings deviate from learned normal — naming *which*
+1. **Collect** — the device silently logs clean, engine-running snapshots to CSV
+   during normal driving, building a "normal" dataset.
+2. **Train** — offline on a laptop (`train_model.py`): a SQL feature-engineering
+   stage (`features.sql` via `build_features.py`) forward-fills tiered PIDs and
+   derives rolling-window features (moving averages + deltas) so the model sees
+   trends, not just instantaneous values; then scale features, fit the Isolation
+   Forest, compute per-feature baselines for interpretability, and save the
+   model.
+3. **Deploy** — the trained model runs on the Pi for real-time inference. The
+   guardian reacts when readings deviate from learned normal — naming *which*
    sensor is off, not just "something's wrong."
 
 This mirrors how real ML systems work: heavy training offline, light inference
 on-device.
+
+**Status: deployed and live.** The Isolation Forest is trained on real logged
+driving data and runs on the Pi as an **advisory** layer. Detection combines the
+forest (unusual multivariate *combinations*) with a per-feature z-score guard
+(any single sensor far outside its learned normal), and a persistence state
+machine that raises severity only when an anomaly sustains. Because a single
+global baseline can't fully separate legitimate multi-regime driving
+(cold-start vs. warm, idle vs. load) from true faults, the ML is surfaced as a
+soft signal, not a hard alarm — the rule-based warning system remains the
+real-time safety layer. A regime-aware baseline (per driving-state normals) is
+the planned next iteration to reduce false positives.
 
 ## Hardware
 
@@ -112,10 +127,11 @@ produced a stable live connection.
 
 - **Virtual dyno is an estimate**, not a calibrated dyno reading.
 
-- **ML anomaly detection is in its data-collection phase.** The device logs
-  clean engine-running snapshots during driving to build a "normal" dataset.
-  The Isolation Forest model activates only after training on enough real,
-  varied driving data — anomaly detection is not yet live.
+- **ML anomaly detection is an advisory, not a safety alarm.** It runs on a
+  single global baseline, so it flags some legitimate cold-start and high-load
+  moments as "unusual." It is surfaced as a soft signal alongside the
+  rule-based warning system, which remains the authoritative real-time safety
+  layer. A regime-aware baseline is the planned next step.
 
 ## Setup
 
@@ -128,7 +144,8 @@ produced a stable live connection.
 4. Download the Vosk speech model into the project directory.
 5. Run on the Pi console (boot-to-console + autologin) so KMSDRM can own the
    display. Auto-launch on login via `~/.bash_profile` (tty1 only).
-6. To train the ML model (laptop only): `pip install -r requirements-train.txt`
+6. To train the ML model (laptop only): `pip install -r requirements-train.txt`,
+   then `python autopi/train_model.py <driving_log.csv>`.
 
 ## License
 
