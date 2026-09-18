@@ -60,6 +60,8 @@ class UI:
         self._data_logger = DataLogger()      # starts the ML data collection
         self._anomaly = AnomalyFeed()   # ML advisory (soft signal, not alarm)
         self._anomaly_result = {"severity": "ok"}
+        self._warn_items = []      # tappable (label, payload) for WARNINGS tab
+        self._explain_busy = False # guard against double-firing the AI
         self._snapshotter = SnapshotThread(data_provider, interval=0.75,
                                            logger=self._data_logger)
         self._ai_router = ai_router
@@ -204,7 +206,7 @@ class UI:
                 else: self.menu = "MAIN"; self.terminal.selected = 0
             elif key == pygame.K_RETURN:
                 self._menu_select(items[self.terminal.selected])
-        elif self.state in ("livegraphs", "dyno", "waiting", "diag", "engineer", "tuning", "confirm_clear"):
+        elif self.state in ("livegraphs", "dyno", "waiting", "diag", "engineer", "tuning", "confirm_clear", "warnings"):
             if key == pygame.K_ESCAPE:
                 self.state = "menu"
                 
@@ -249,6 +251,26 @@ class UI:
             if cx <= x <= cx + cw and cy <= y <= cy + ch:
                 self._clear_codes()
             else:
+                self.state = "menu"
+            return
+
+        if self.state == "warnings":
+            # Top-right corner exits back to menu.
+            if x >= self.width - 100 and y <= 100:
+                self._active_diag = None
+                self.state = "menu"
+                return
+            # Tap a numbered item to explain it; else scroll if long.
+            item = self._warn_item_at(y)
+            if item is not None:
+                self._explain_item(item)
+            elif self.diag_screen.can_scroll():
+                if y < self.height // 2:
+                    self.diag_screen.scroll_by(-3)
+                else:
+                    self.diag_screen.scroll_by(3)
+            else:
+                self._active_diag = None
                 self.state = "menu"
             return
         
@@ -503,31 +525,148 @@ class UI:
             self.diag_screen.set_message("FUEL SYSTEM", body)
             
     def _show_warnings(self):
-        # Show current warnings PLUS this drive's timestamped history, so you
-        # can review at a safe stop exactly what happened and when - warnings
-        # that cleared while driving are still here with their timestamps.
-        body = []        
+        # WARNINGS tab: rule-based warnings AND ML anomalies together, each a
+        # TAPPABLE numbered item you can tap to get an on-demand AI explanation.
+        # Plus this drive's timestamped history. The AI only runs when you tap -
+        # never automatically - so it never churns on momentary blips.
+        body = []
+        self._warn_items = []      # (number, kind, text/payload) for tap-to-explain
+        n = 0
+
+        # 1. Active rule-based warnings (tappable).
         if self._active_warnings:
             body.append("--- ACTIVE NOW ---")
             body.append("")
             for w in self._active_warnings:
-                body.extend(self._wrap_line("* " + w, 44))
+                n += 1
+                self._warn_items.append((n, "warning", w))
+                for chunk in self._wrap_line("[" + str(n) + "] " + w, 42):
+                    body.append(chunk)
                 body.append("")
+
+        # 2. ML anomaly (tappable) - only when the detector is flagging.
+        ml = self._anomaly_result
+        if ml.get("severity", "ok") != "ok":
+            body.append("--- ML ANOMALY ---")
+            body.append("")
+            n += 1
+            culprits = ml.get("culprits", [])
+            top = culprits[0][0].upper() if culprits else "readings"
+            sev = ml.get("severity", "watch")
+            regime = ml.get("regime", "")
+            label = ("SUSTAINED anomaly - " + top) if sev == "elevated"                 else ("unusual - " + top)
+            self._warn_items.append((n, "anomaly", ml))
+            for chunk in self._wrap_line("[" + str(n) + "] ML: " + label, 42):
+                body.append(chunk)
+            if regime:
+                body.append("     (while " + regime + ")")
+            body.append("")
+
+        # 3. This drive's history - NOW TAPPABLE too, so you can explain any
+        # past warning, not just the active ones. Historical explanations are a
+        # bit more general (the live sensor context is gone), but still useful.
         history = self._warn_log.session_entries()
         if history:
             body.append("--- THIS DRIVE (newest first) ---")
             body.append("")
             for stamp, w in history:
-                # show HH:MM:SS (drop the date to save space) + the warning
+                n += 1
+                self._warn_items.append((n, "history", w))
                 clock = stamp.split(" ")[1] if " " in stamp else stamp
                 body.append(clock)
-                body.extend(self._wrap_line("  " + w, 42))
+                for chunk in self._wrap_line("[" + str(n) + "] " + w, 42):
+                    body.append(chunk)
                 body.append("")
+
         if not body:
             body = ["No warnings this drive.", "", "All systems nominal."]
+        elif self._warn_items:
+            body.append("")
+            body.append("--- TAP A [#] TO EXPLAIN ---")
+
         self._active_diag = ("warnings", None)
+        self._warn_body = body     # remember for tap hit-testing
         self.diag_screen.set_message("WARNINGS", body)
+        self.state = "warnings"
+
+    def _warn_item_at(self, y):
+        # Which tappable [#] item is at screen-y? diag_screen renders lines from
+        # y=66, 24px each, offset by its scroll. Find the line, match its [#].
+        line_h = 24
+        top = 66
+        if y < top:
+            return None
+        line_idx = (y - top) // line_h + self.diag_screen._scroll
+        if line_idx < 0 or line_idx >= len(self._warn_body):
+            return None
+        text = self._warn_body[line_idx]
+        # A tappable line starts with "[N] ". Extract N.
+        import re as _re
+        m = _re.match(r"\[(\d+)\]", text.strip())
+        if not m:
+            return None
+        num = int(m.group(1))
+        for item in self._warn_items:
+            if item[0] == num:
+                return item
+        return None
+
+    def _explain_item(self, item):
+        # Fire an ON-DEMAND AI explanation of the tapped warning/anomaly.
+        # Threaded so the UI never blocks. Routes through ai_client (home Ollama
+        # now; the local SLM will slot into this same path later).
+        if self._explain_busy:
+            return
+        self._explain_busy = True
+        num, kind, payload = item
+        if kind == "warning":
+            title = "EXPLAIN: warning"
+            prompt = ("A car diagnostic device raised this warning: '"
+                      + str(payload) + "'. Explain in 2-3 plain sentences what "
+                      "it means and what the driver should do. Be concrete, no "
+                      "jargon.")
+        elif kind == "history":
+            title = "EXPLAIN: past warning"
+            prompt = ("Earlier in this drive the car showed this warning: '"
+                      + str(payload) + "'. It may have cleared since. Explain in "
+                      "2-3 plain sentences what it means and what the driver "
+                      "should do or watch for. Be concrete, no jargon.")
+        else:  # anomaly
+            culprits = payload.get("culprits", [])
+            cul_txt = ", ".join("%s (%.1f sigma from normal)" % (c, z)
+                                for c, z in culprits[:4]) or "overall readings"
+            regime = payload.get("regime", "normal")
+            title = "EXPLAIN: ML anomaly"
+            prompt = ("A car's machine-learning monitor flagged an anomaly while "
+                      "the engine was in '" + regime + "' operation. The sensors "
+                      "furthest from this car's learned normal are: " + cul_txt
+                      + ". Explain in 2-3 plain sentences what this pattern might "
+                      "mean and whether the driver should be concerned. Be honest "
+                      "if it could be benign.")
+        self.diag_screen.set_message(title, ["Asking AI...", "",
+                                             "(needs WiFi / local AI)"])
         self.state = "diag"
+        self._active_diag = None
+
+        def worker():
+            if self._ai_client is None:
+                lines = ["AI not available.", "",
+                         "Connect to WiFi or enable the local model."]
+            else:
+                try:
+                    ans = self._ai_client.ask(prompt)
+                except Exception as err:
+                    ans = "AI unavailable: " + str(err)
+                if ans.startswith("AI unavailable"):
+                    ans = ans + ("  (Offline - the local model will "
+                                 "answer this once installed.)")
+                lines = []
+                for chunk in ans.split("\n"):
+                    lines.extend(self._wrap_line(chunk, 58))
+            self.diag_screen.set_message(title, lines)
+            self._explain_busy = False
+
+        threading.Thread(target=worker, daemon=True).start()
         
     def _open_report(self):
         self._active_diag = ("report", None)
@@ -770,6 +909,10 @@ class UI:
             self._draw_confirm_clear(surface)
             return
         
+        if self.state == "warnings":
+            self.diag_screen.draw(surface)   # same renderer; taps handled above
+            return
+        
         if self.state == "diag":
             self.diag_screen.draw(surface)
             return
@@ -835,7 +978,7 @@ class UI:
                     ml_text = "ML: readings unusual"
                 ml_font = pygame.font.SysFont("consolas", 16, bold=True)
                 ml_surf = ml_font.render(ml_text, True, ml_color)
-                surface.blit(ml_surf, (self.width//2 - ml_surf.get_width()//2, 410))
+                surface.blit(ml_surf, (self.width//2 - ml_surf.get_width()//2, 95))
             # ONE-LINE warning on the face: show the top (most important)
             # warning as a single line. Full list lives in the WARNINGS tab.
             if self._active_warnings:

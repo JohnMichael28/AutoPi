@@ -1,18 +1,18 @@
-"""Phase 2: train the Isolation Forest anomaly detector from collected normal
-driving data. Runs on the LAPTOP (not the Pi) - training is heavy, inference is
-light. Sourced approach: train only on normal data, learn the boundary of
-normal, flag deviations (EngineAD / predictive-maintenance literature).
+"""Phase 2: train the CONTEXTUAL Isolation Forest anomaly detector from
+collected normal driving data. Runs on the LAPTOP (not the Pi).
+
+CONTEXTUAL / PER-REGIME: instead of one global model, we split the data into
+operating regimes (see regimes.py) and train a SEPARATE Isolation Forest +
+per-feature baselines + threshold FOR EACH regime. At inference the detector
+picks the regime first, then scores against that regime's normal. This fixes
+the false positives the global model produced, where legitimate cold-start and
+high-load readings looked 'anomalous' against a blurred all-driving average.
 
 Usage:  python train_model.py driving_log.csv
-Outputs: models/anomaly_model.joblib (model + scaler + feature list + baselines)
-
-This version feeds the SQL-engineered features (build_features.py -> features.sql)
-into the model instead of raw PIDs, so (a) sparse/tiered columns are forward-
-filled instead of dropped, and (b) rolling-window context features let the model
-catch drift, not just instantaneous spikes."""
+Outputs: models/anomaly_model.joblib  (a dict of per-regime bundles + meta)
+"""
 import sys
 import os
-import json
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
@@ -21,15 +21,43 @@ import joblib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_features import build_features
+from regimes import regime_of, REGIMES
 
-# The model's input vector = the engineered feature columns (NO timestamp, NO
-# intake_temp). Order is fixed and saved with the model so inference matches.
 FEATURES = ["rpm", "speed", "coolant_temp", "engine_load", "throttle",
             "boost", "afr", "voltage", "timing", "stft_b1", "ltft_b1",
             "coolant_avg5", "load_avg5", "rpm_avg5",
             "coolant_d", "voltage_d", "rpm_d"]
 
-MAX_TRAIN = 50000   # sample cap - IF needs no more; keeps training fast
+MAX_TRAIN_PER_REGIME = 50000   # cap per regime; IF needs no more
+MIN_ROWS_PER_REGIME = 300      # below this, a regime can't train reliably
+
+
+def train_one(df_reg, name):
+    """Train one regime's forest + baselines + threshold. Returns a bundle
+    dict, or None if there's too little data to be trustworthy."""
+    df_reg = df_reg.dropna(subset=FEATURES)
+    n = len(df_reg)
+    if n < MIN_ROWS_PER_REGIME:
+        print("  %-11s %6d rows  -> SKIP (too few, will fall back to 'normal')"
+              % (name, n))
+        return None
+    if n > MAX_TRAIN_PER_REGIME:
+        df_reg = df_reg.sample(MAX_TRAIN_PER_REGIME, random_state=42)
+    X = df_reg[FEATURES].values
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
+    model = IsolationForest(n_estimators=100, contamination="auto",
+                            random_state=42, n_jobs=-1)
+    model.fit(Xs)
+    baselines = {f: {"mean": float(np.mean(X[:, i])),
+                     "std": float(np.std(X[:, i]))}
+                 for i, f in enumerate(FEATURES)}
+    scores = model.score_samples(Xs)
+    threshold = float(np.percentile(scores, 1.0))
+    print("  %-11s %6d rows  -> trained (threshold %.4f)"
+          % (name, len(df_reg), threshold))
+    return {"model": model, "scaler": scaler, "baselines": baselines,
+            "threshold": threshold, "n": int(n)}
 
 
 def main():
@@ -38,51 +66,29 @@ def main():
         return
     csv_path = sys.argv[1]
 
-    # 1. LOAD + SQL FEATURE ENGINEERING --------------------------------
     df = build_features(csv_path)
     print("Engineered feature rows:", len(df))
-    df = df.dropna(subset=FEATURES)     # safety net; SQL already fills
-    print("After final clean:", len(df), "rows")
-    if len(df) < 500:
-        print("WARNING: <500 rows. Collect more driving data before training.")
-        if len(df) == 0:
-            return
+    df = df.dropna(subset=FEATURES)
+    df["regime"] = df.apply(regime_of, axis=1)
+    print("Training one model per regime:")
 
-    # Sample down if huge (Isolation Forest gains nothing past ~tens of k).
-    if len(df) > MAX_TRAIN:
-        df = df.sample(MAX_TRAIN, random_state=42)
-        print("Sampled down to", len(df), "rows for training.")
+    regime_bundles = {}
+    for name in REGIMES:
+        sub = df[df["regime"] == name]
+        bundle = train_one(sub, name)
+        if bundle is not None:
+            regime_bundles[name] = bundle
 
-    X = df[FEATURES].values
+    if "normal" not in regime_bundles:
+        print("ERROR: 'normal' regime failed to train - aborting.")
+        return
 
-    # 2. SCALE ----------------------------------------------------------
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    # 3. TRAIN ISOLATION FOREST -----------------------------------------
-    model = IsolationForest(n_estimators=100, contamination="auto",
-                            random_state=42, n_jobs=-1)
-    model.fit(X_scaled)
-    print("Isolation Forest trained on", X_scaled.shape[0], "samples,",
-          X_scaled.shape[1], "features.")
-
-    # 4. PER-FEATURE BASELINES (interpretability layer) -----------------
-    baselines = {}
-    for i, feat in enumerate(FEATURES):
-        baselines[feat] = {"mean": float(np.mean(X[:, i])),
-                           "std": float(np.std(X[:, i]))}
-
-    # 5. SCORE THRESHOLD ------------------------------------------------
-    scores = model.score_samples(X_scaled)
-    threshold = float(np.percentile(scores, 1.0))   # bottom 1% of normal
-    print("Anomaly score threshold (1st pctile of normal):", round(threshold, 4))
-
-    # 6. SAVE -----------------------------------------------------------
+    out = {"version": 2, "contextual": True, "features": FEATURES,
+           "regimes": regime_bundles, "fallback": "normal"}
     os.makedirs("models", exist_ok=True)
-    bundle = {"model": model, "scaler": scaler, "features": FEATURES,
-              "baselines": baselines, "threshold": threshold}
-    joblib.dump(bundle, "models/anomaly_model.joblib")
-    print("Saved -> models/anomaly_model.joblib")
+    joblib.dump(out, "models/anomaly_model.joblib")
+    print("Saved -> models/anomaly_model.joblib  (%d regimes: %s)"
+          % (len(regime_bundles), ", ".join(regime_bundles.keys())))
     print("Deploy: scp models/anomaly_model.joblib "
           "john288@autopi.local:~/autopi-project/models/")
 
