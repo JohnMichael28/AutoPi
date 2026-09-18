@@ -986,7 +986,7 @@ class UI:
                 top = self._active_warnings[0]
                 if len(top) > 52:
                     top = top[:49] + "..."
-                wline = warn_font.render(top, True, (255, 215, 40))
+                wline = warn_font.render(top, True, (65, 255, 120))
                 surface.blit(wline, (self.width//2 - wline.get_width()//2, 410))
                 if len(self._active_warnings) > 1:
                     more = pygame.font.SysFont("consolas", 14).render(
