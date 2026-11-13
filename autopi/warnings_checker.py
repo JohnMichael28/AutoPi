@@ -20,9 +20,8 @@ class WarningChecker:
         if coolant is not None and coolant >= self.__coolant_warn_c:
             warnings.append("!! ENGINE HOT - let it rest / turn off soon")
 
-        voltage = vehicle.read_number(obd.commands.CONTROL_MODULE_VOLTAGE)
-        if voltage is not None and voltage <= self.__voltage_warn:
-            warnings.append("!! LOW BATTERY - risk of draining")
+        # Voltage intentionally not checked: module voltage reads under 12V
+        # on every car tested, so it only produced false LOW BATTERY alarms.
 
         runtime = vehicle.read_number(obd.commands.RUN_TIME)
         if runtime is not None and runtime >= self.__idle_warn_seconds:

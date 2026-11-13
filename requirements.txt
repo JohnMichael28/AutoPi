@@ -4,4 +4,6 @@ evdev
 vosk
 sounddevice
 requests
-numpy
+numpyjoblib
+scikit-learn
+qrcode

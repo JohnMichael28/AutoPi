@@ -25,7 +25,11 @@ class DataLogger:
               "boost", "afr", "voltage", "timing", "throttle", "intake_temp",
               "stft_b1", "ltft_b1"]
 
-    def __init__(self, path="data/driving_log.csv"):
+    # v2 (Nov 2026): throttle moved to the FAST poll tier, so it's fresh every
+    # row instead of a cached value up to ~7 s old, and each cycle reads one
+    # more PID. New rows go to a new file so old and new data never get mixed
+    # by accident; train on v2 alone, or on both once v2 has enough drives.
+    def __init__(self, path="data/driving_log_v2.csv"):
         self.__path = path
         self.__ensure_file()
 

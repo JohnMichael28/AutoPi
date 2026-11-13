@@ -29,13 +29,23 @@ class AnomalyFeed:
     RAW = ["rpm", "speed", "coolant_temp", "engine_load", "throttle",
            "boost", "afr", "voltage", "timing", "stft_b1", "ltft_b1"]
 
-    def __init__(self, model_path="models/anomaly_model.joblib"):
-        self._det = AnomalyDetector(model_path) if AnomalyDetector else None
+    def __init__(self, model_path="models/anomaly_model.joblib", ignore=None):
+        self._det = AnomalyDetector(model_path, ignore=ignore) \
+            if AnomalyDetector else None
         self._buf = deque(maxlen=11)      # last 11 rows for avg5 + lag10
         self._last = {}                   # last seen value per key (forward-fill)
 
     def available(self):
         return self._det is not None and getattr(self._det, "ok", False)
+
+    def status(self):
+        """{loaded, reason} for the WARNINGS tab - so a missing model is
+        visible instead of silently showing nothing."""
+        if self._det is None:
+            return {"loaded": False,
+                    "reason": "anomaly module failed to import (numpy missing?)"}
+        return {"loaded": bool(getattr(self._det, "ok", False)),
+                "reason": getattr(self._det, "reason", "")}
 
     def _num(self, v):
         return v if isinstance(v, (int, float)) else None

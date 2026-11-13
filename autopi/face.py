@@ -12,6 +12,7 @@ MOODS = {
     "purple":    {"rgb": (185, 100, 255), "text": (57, 255, 120),  "label": "CAMP / IDLING"},
     "turquoise": {"rgb": (40, 230, 200),  "text": (185, 100, 255), "label": "TRACK MODE"},
     "critical":  {"rgb": (255, 30, 30),   "text": (255, 255, 255), "label": "!! CRITICAL !!"},
+    "cold":      {"rgb": (60, 150, 255),  "text": (200, 230, 255), "label": "COLD ENGINE - WARMING UP"},
 }
 
 FACES = {
@@ -22,6 +23,7 @@ FACES = {
     "orange": ["   XX      XX   ","  XXXX    XXXX  ","  XXXX    XXXX  ","  XXXX    XXXX  ","   XX      XX   ","                ","  X        X    ","  X        X    ","  XX      XX    ","   XXXXXXXX     ","    XXXXXX      ","                ",],
     "purple": ["                ","                ","                ","  XXXXX  XXXXX  ","  XXXXX  XXXXX  ","                ","                ","                ","                ","     XXXXXX     ","      XXXX      ","                ",],
     "turquoise": ["                ","  XXX        XX ","   XXXX    XXX  ","   XXXX    XXX  ","                ","                ","                ","   XXXXXXXXXX   ","   X X X X X X  ","   XXXXXXXXXX   ","                ","                ",],
+    "cold": ["                ","                ","   XX      XX   ","   XX      XX   ","   XX      XX   ","                ","   X X X X X X  ","    X X X X X X ","                ","                ","                ","                ",],
     "critical": ["  X        X    ","  XX      XX    ","  XXXX  XXXX    ","   XXX  XXX     ","                ","     XXXXXX     ","    XX    XX    ","    XX    XX    ","    XX    XX    ","    XX    XX    ","     XXXXXX     ","                ",],
 }
 

@@ -15,13 +15,23 @@ finger lifts, the panel has reported the true position). We still expose 'down'
 for anything that needs press feedback, but the actionable event the UI treats
 as a tap is the 'up', which always carries accurate coordinates. Axis handling
 (swap/invert/scale) is config-driven but this panel needs none of it - the raw
-mapping tracks the finger correctly once the coordinates settle."""
+mapping tracks the finger correctly once the coordinates settle.
+
+SELF-HEALING: the panel's touch controller is a USB device. If it drops off the
+bus (voltage dip while cranking, loose cable, hub reset) the kernel deletes its
+/dev/input node and the next read raises OSError errno 19 (ENODEV). That used
+to crash the whole UI. Now poll() catches it, drops the dead handle, and
+re-scans every reconnect_interval seconds until the controller comes back.
+The UI never sees the exception - it just gets no taps while the panel is gone.
+The calibration and tap-on-UP behaviour are unchanged."""
+import time
 import evdev
 from evdev import ecodes
 
 
 class TouchReader:
-    def __init__(self, device_path, screen_w, screen_h, calib=None):
+    def __init__(self, device_path, screen_w, screen_h, calib=None,
+                 reconnect_interval=2.0):
         self.screen_w = screen_w
         self.screen_h = screen_h
         calib = calib or {}
@@ -32,20 +42,55 @@ class TouchReader:
         self._y_scale = float(calib.get("y_scale", 1.0))
         self._x_offset = float(calib.get("x_offset", 0.0))
         self._y_offset = float(calib.get("y_offset", 0.0))
-        self.dev = self._find_touch_device(device_path)
-        caps = self.dev.capabilities()
-        abs_info = dict(caps.get(ecodes.EV_ABS, []))
-        x_info = abs_info[ecodes.ABS_X]
-        y_info = abs_info[ecodes.ABS_Y]
-        self._x_min, self._x_max = x_info.min, x_info.max
-        self._y_min, self._y_max = y_info.min, y_info.max
-        self.dev.grab()
+        self._fallback_path = device_path
+        self._reconnect_interval = reconnect_interval
+        self._last_attempt = 0.0
+        self.dev = None
+        # First open may raise so run_ui still prints "Touch unavailable".
+        self._open(raise_on_fail=True)
         self._raw_x = 0
         self._raw_y = 0
         self._x = 0
         self._y = 0
         self._down = False
         self._samples_since_down = 0    # how many ABS updates since touch began
+
+    def _open(self, raise_on_fail=False):
+        """Find the panel, read its ABS ranges, and grab it. Returns True on
+        success. O(d) over input devices."""
+        self._last_attempt = time.time()
+        try:
+            dev = self._find_touch_device(self._fallback_path)
+            caps = dev.capabilities()
+            abs_info = dict(caps.get(ecodes.EV_ABS, []))
+            x_info = abs_info[ecodes.ABS_X]
+            y_info = abs_info[ecodes.ABS_Y]
+            self._x_min, self._x_max = x_info.min, x_info.max
+            self._y_min, self._y_max = y_info.min, y_info.max
+            dev.grab()
+            self.dev = dev
+            return True
+        except Exception:
+            self.dev = None
+            if raise_on_fail:
+                raise
+            return False
+
+    def _drop(self, reason):
+        """Release a dead handle without letting cleanup errors escape (the
+        file descriptor is already invalid once the device vanished)."""
+        print("Touch lost (" + str(reason) + ") - retrying every "
+              + str(self._reconnect_interval) + "s")
+        try:
+            self.dev.close()
+        except Exception:
+            pass
+        self.dev = None
+        self._down = False
+        self._last_attempt = time.time()
+
+    def is_available(self):
+        return self.dev is not None
 
     @staticmethod
     def _find_touch_device(fallback_path):
@@ -86,11 +131,25 @@ class TouchReader:
         coordinates. 'down' is emitted too (for press feedback) but its
         coordinates can be stale on this panel, so don't select menu items on
         'down'."""
+        if self.dev is None:
+            # Panel is gone - try to re-find it, throttled so we don't scan
+            # /dev/input 60 times a second.
+            if time.time() - self._last_attempt >= self._reconnect_interval:
+                if self._open():
+                    print("Touch reconnected")
+            return []
+
         out = []
         pending_down = False
         pending_up = False
         while True:
-            event = self.dev.read_one()
+            try:
+                event = self.dev.read_one()
+            except OSError as err:
+                # errno 19 ENODEV = unplugged / re-enumerated. Any OSError on
+                # an evdev fd means the handle is no longer usable.
+                self._drop(err)
+                return out
             if event is None:
                 break
             if event.type == ecodes.EV_ABS:
@@ -120,7 +179,14 @@ class TouchReader:
         return out
 
     def close(self):
+        if self.dev is None:
+            return
         try:
             self.dev.ungrab()
         except Exception:
             pass
+        try:
+            self.dev.close()
+        except Exception:
+            pass
+        self.dev = None

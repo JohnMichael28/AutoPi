@@ -9,7 +9,9 @@ class ShutdownWatcher:
     Requires the signal to persist for a few checks (debounce) so a brief
     glitch doesn't trigger a false shutdown. Pure logic - testable."""
 
-    def __init__(self, voltage_floor=12.4, confirm_count=3):
+    def __init__(self, voltage_floor=None, confirm_count=3):
+        # voltage_floor defaults to None (OFF): module voltage reads under 12V
+        # on the driver's cars even while running, so it is not trustworthy.
         # voltage_floor: below this = likely ignition off (engine not charging)
         # confirm_count: how many consecutive bad readings before we act
         self.voltage_floor = voltage_floor
@@ -24,7 +26,8 @@ class ShutdownWatcher:
         if not obd_connected:
             ignition_off = True
         # Signal 2: voltage sagged (engine off, not charging)
-        elif voltage is not None and voltage < self.voltage_floor:
+        elif (self.voltage_floor is not None and voltage is not None
+              and voltage < self.voltage_floor):
             ignition_off = True
 
         if ignition_off:

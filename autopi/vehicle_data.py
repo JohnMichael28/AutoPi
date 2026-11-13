@@ -44,23 +44,41 @@ class VehicleData:
         
         self._fuel_flag = None
         self._last_snapshot = {}      # cached snapshot for fuel_health() to read
+        self._reading = None          # this cycle's Reading (helpers use it)
         
-        from autopi.dyno_capture import DynoCapture
         import json
         with open("config.json") as f:
             dcfg = json.load(f).get("dyno", {})
-        self._dyno = DynoCapture(
-            weight_lbs=dcfg.get("vehicle_weight_lbs", 4200),
-            drivetrain_loss=dcfg.get("drivetrain_loss", 0.15),
-            min_speed_mph=dcfg.get("min_pull_speed_mph", 15),
-            max_speed_mph=dcfg.get("max_pull_speed_mph", 80))
+
+        # Automatic screen switching + automatic dyno capture. All thresholds
+        # live in config.json under "drive_mode" (defaults in drive_mode.py).
+        from autopi.drive_mode import DriveModeSelector, AutoDyno
+        with open("config.json") as f:
+            mcfg = json.load(f).get("drive_mode", {})
+        # Screens are ALWAYS automatic. A dashboard picked from the menu is a
+        # temporary override: it holds until the driving situation changes
+        # (e.g. you pick TRACK while cruising; when you stop, auto takes over).
+        self._mode_selector = DriveModeSelector(mcfg)
+        self._override = None          # mode the driver picked, or None
+        self._override_base = None     # auto pick at the moment they picked it
+
+        # Cold-start guide: blue face + "safe to drive off" message.
+        from autopi.warmup import WarmupMonitor
+        with open("config.json") as f:
+            wcfg = json.load(f).get("warmup", {})
+        self._warmup = WarmupMonitor(wcfg)
+        self._warmup_status = self._warmup.status()
+        # Automatic dyno: always on, records every hard pull by itself.
+        self._auto_dyno = AutoDyno(dcfg)
 
     def update(self):
         pass
 
     def _instant_mpg(self):
-        maf = self._vehicle.read_number(obd.commands.MAF)
-        speed = self._vehicle.read_number(obd.commands.SPEED)
+        # MAF + speed come from this cycle's reading (no extra OBD queries -
+        # each extra query was ~0.1-0.2 s of lag on every screen update).
+        maf = getattr(self._reading, "boost_psi", None)      # carries MAF g/s
+        speed = getattr(self._reading, "speed", None)
         if maf is None or speed is None or maf <= 0:
             return None
         speed_mph = speed * 0.621371
@@ -95,7 +113,7 @@ class VehicleData:
 
     def _read_fuel_level(self):
         try:
-            value = self._vehicle.read_number(obd.commands.FUEL_LEVEL)
+            value = getattr(self._reading, "fuel_level", None)
             if value is None:
                 return "--"
             return round(value)
@@ -106,7 +124,7 @@ class VehicleData:
         # Real engine run time from the car (PID 011F), in minutes. This is
         # how long the ENGINE has been running since start - not app uptime.
         # Returns "--" if the car doesn't report it or the engine's off.
-        seconds = self._vehicle.read_number(obd.commands.RUN_TIME)
+        seconds = getattr(self._reading, "run_time", None)
         if isinstance(seconds, (int, float)):
             return round(seconds / 60)
         return "--"
@@ -149,6 +167,7 @@ class VehicleData:
 
     def snapshot(self):
         reading = self._vehicle.read_current()
+        self._reading = reading
         self._check_codes()
         self.has_codes = len(self._cached_codes) > 0
 
@@ -175,7 +194,24 @@ class VehicleData:
         speed_mph = None
         if isinstance(reading.speed, (int, float)):
             speed_mph = reading.speed * 0.621371
-        self._dyno.feed(reading.rpm, speed_mph)
+        speed_t = None
+        if hasattr(self._vehicle, "fast_sample") and self._vehicle.fast_lane_running():
+            _v, speed_t = self._vehicle.fast_sample("SPEED")
+        self._auto_dyno.feed(reading.rpm, speed_mph, reading.throttle,
+                             reading.engine_load, speed_t=speed_t)
+
+        # Pick the screen from how the car is being driven. A menu pick holds
+        # only until the auto pick changes, then automatic takes over again.
+        auto_pick = self._mode_selector.update(
+            speed=speed_mph, rpm=reading.rpm, throttle=reading.throttle,
+            load=reading.engine_load, offroad_flag=None)
+        if self._override is not None and auto_pick != self._override_base:
+            self._override = None
+        self.mode = self._override if self._override is not None else auto_pick
+
+        self._warmup_status = self._warmup.update(
+            rpm=reading.rpm, coolant=reading.coolant_temp, speed=speed_mph,
+            throttle=reading.throttle)
         
         # Only evaluate fuel warnings when we have a VALID live reading (engine
         # running, real rpm). Garbage/partial readings during a connection drop
@@ -213,24 +249,63 @@ class VehicleData:
             "mode": self.mode,
             "has_codes": self.has_codes,
             "needs_gas": self.needs_gas,
+            "warmup": dict(self._warmup_status),
         }
         self._last_snapshot = result      # cache for fuel_health (no extra reads)
         return result
 
     def get_dyno_run(self):
-        return self._dyno.get_last_run()
-    
-    def arm_dyno(self):
-        # UI START button - begin capturing the next pull.
-        self._dyno.arm()
+        # Points of the newest auto-captured pull: [(rpm, hp), ...] or [].
+        last = self._auto_dyno.last()
+        return list(last["points"]) if last else []
 
-    def disarm_dyno(self):
-        # UI STOP button - finish and save the current pull.
-        self._dyno.disarm()
+    def get_dyno_info(self):
+        # Newest pull: {"time", "points", "peak_hp", "peak_rpm", ...} or None.
+        return self._auto_dyno.last()
 
-    def dyno_armed(self):
-        # For the UI to show ARMED vs idle state.
-        return self._dyno.is_armed()
+    def dyno_history(self):
+        return self._auto_dyno.history()
+
+    def dyno_status(self):
+        return self._auto_dyno.status()
+
+    def set_manual_mode(self, mode):
+        # Driver picked a dashboard from the menu: show it now, and hand
+        # control back to automatic as soon as the driving situation changes.
+        self.mode = mode
+        self._override = mode
+        self._override_base = self._mode_selector.mode
+
+    def fast_values(self):
+        """Freshest RPM / throttle / speed (mph) from the fast lane, for the
+        screen to draw every frame. Empty dict if the fast lane is off."""
+        if not hasattr(self._vehicle, "fast_lane_running") \
+                or not self._vehicle.fast_lane_running():
+            return {}
+        f = self._vehicle.fast_values()
+        out = {}
+        if isinstance(f.get("RPM"), (int, float)):
+            out["rpm"] = round(f["RPM"])
+        if isinstance(f.get("THROTTLE_POS"), (int, float)):
+            out["throttle"] = round(f["THROTTLE_POS"], 1)
+        if isinstance(f.get("SPEED"), (int, float)):
+            out["speed"] = int(round(f["SPEED"] * 0.621371))
+        return out
+
+    def rpm_rate_hz(self):
+        if hasattr(self._vehicle, "rpm_rate_hz"):
+            return self._vehicle.rpm_rate_hz()
+        return 0.0
+
+    def priority(self):
+        """Context manager: diagnostics get the OBD port first."""
+        if hasattr(self._vehicle, "priority"):
+            return self._vehicle.priority()
+        import contextlib
+        return contextlib.nullcontext()
+
+    def warmup_status(self):
+        return dict(self._warmup_status)
     
     def fuel_mood_flag(self):
         # For the guardian mood - None/warn/bad from the cached snapshot trims.

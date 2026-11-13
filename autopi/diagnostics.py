@@ -25,7 +25,7 @@ class DiagnosticReader(ABC):
         # Query the car for this mode's data. Return raw result (or None).
         pass
 
-    def explain(self, raw):
+    def explain(self, raw, on_status=None, still_wanted=None):
         # Translate raw jargon to plain English via local AI. Offline-safe:
         # if the AI is unreachable (no WiFi/Ollama in the car), return a clear
         # note instead of hanging - the raw data above is still fully shown.
@@ -39,6 +39,11 @@ class DiagnosticReader(ABC):
                   "a mechanic unless the data clearly shows a real fault. If the "
                   "data looks normal or empty, say things look fine.")
         try:
+            # Retries by itself while the screen is open (on_status shows
+            # "retrying in N s"), so you never have to back out and reopen.
+            if hasattr(self._ai_client, "ask_with_retry"):
+                return self._ai_client.ask_with_retry(
+                    prompt, on_status=on_status, still_wanted=still_wanted)
             return self._ai_client.ask(prompt)
         except Exception:
             return "(AI explanation unavailable offline - raw data shown above.)"

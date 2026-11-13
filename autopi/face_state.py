@@ -13,9 +13,10 @@ class FaceState:
 
     def decide(self, coolant_temp=None, has_codes=False, voltage=None,
                mode="highway", critical=False, needs_gas=False,
-               info_flag=False, fuel_flag=None):
+               info_flag=False, fuel_flag=None, cold=False):
+        # voltage is accepted for old callers but IGNORED: module voltage
+        # reads under 12V on every car tested, so it only caused false alarms.
         coolant_temp = self._num(coolant_temp)
-        voltage = self._num(voltage)
 
         if critical:
             return "critical"
@@ -27,10 +28,10 @@ class FaceState:
             return "red"          # fuel trims way off = real problem
         if coolant_temp is not None and coolant_temp >= 105:
             return "yellow"
-        if voltage is not None and voltage <= 12.2:
-            return "yellow"
         if fuel_flag == "warn":
             return "yellow"       # trims drifting = worth watching
+        if cold:
+            return "cold"         # blue face: cold start / warming up
         if needs_gas or info_flag:
             return "blue"
         if mode == "adventure":

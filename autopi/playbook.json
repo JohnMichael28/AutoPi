@@ -1,0 +1,166 @@
+{
+  "_about": "What-to-do steps for every AutoPi warning and ML anomaly. Data, not code: edit here. Warnings match on ALL 'match' phrases (first match wins). Anomalies match on the culprit sensor name prefix.",
+  "warnings": [
+    {
+      "match": [
+        "KNOCK"
+      ],
+      "steps": [
+        "Ease off the throttle now - less load stops the knock.",
+        "Next fill-up, use the octane your owner's manual lists; if knock repeats, try a tank of 91+.",
+        "If it knocks at normal throttle: check spark plugs and for heat soak (hot day, stop-and-go)."
+      ]
+    },
+    {
+      "match": [
+        "COOLANT CRITICAL"
+      ],
+      "steps": [
+        "Pull over where it is safe. Turn the heater to full HOT, fan on high.",
+        "Idle 1-2 min; if the temp keeps climbing, shut the engine off.",
+        "Do NOT open the radiator cap hot. When cool, check the coolant overflow tank.",
+        "Look for drips under the car and check the cooling fan runs when hot."
+      ]
+    },
+    {
+      "match": [
+        "COOLANT HIGH"
+      ],
+      "steps": [
+        "Ease off: lower speed and load, heater to HOT.",
+        "If it keeps rising toward 113C, pull over and let it cool.",
+        "When cool: check coolant level and clear bugs/debris from the radiator front."
+      ]
+    },
+    {
+      "match": [
+        "FUEL TRIM DRIFT",
+        "lean"
+      ],
+      "steps": [
+        "Lean = the ECU is ADDING fuel to make up for extra air.",
+        "Listen at idle for a hiss: vacuum leak (PCV hose, intake boots, brake booster line).",
+        "Check the intake pipe after the MAF for cracks or loose clamps.",
+        "Clean the MAF sensor (MAF cleaner spray only, never touch the wire).",
+        "Lean only at high load = weak fuel pump or clogged filter."
+      ]
+    },
+    {
+      "match": [
+        "FUEL TRIM DRIFT",
+        "rich"
+      ],
+      "steps": [
+        "Rich = the ECU is PULLING fuel out.",
+        "Check the air filter - a clogged filter is the easy fix.",
+        "Smell for raw fuel: leaking injector or high fuel pressure.",
+        "Clean the MAF sensor - a dirty MAF can over-read."
+      ]
+    },
+    {
+      "match": [
+        "FUEL TRIM SWING"
+      ],
+      "steps": [
+        "Short-term trim swinging = live mixture correction.",
+        "If it only happens at idle, suspect a vacuum leak.",
+        "If it happens everywhere, the front A/F sensor may be slow - watch for a P0130-P0135 code."
+      ]
+    },
+    {
+      "match": [
+        "STRAINING"
+      ],
+      "steps": [
+        "Pause 2-3 min at idle when safe - lets the engine and CVT cool.",
+        "Use X-Mode / low ratio on climbs and keep a steady, low speed.",
+        "If coolant reaches 106C, stop and let it cool."
+      ]
+    },
+    {
+      "match": [
+        "TURBO HOT"
+      ],
+      "steps": [
+        "Idle 30-60 s at light load before turning the car off.",
+        "Never shut off right after a hard pull - oil carries heat out of the turbo."
+      ]
+    }
+  ],
+  "anomaly": {
+    "coolant": [
+      "Coolant is behaving unlike your car's normal.",
+      "Watch the temp gauge; when cool, check the coolant level.",
+      "Make sure the radiator fan runs when the engine is hot."
+    ],
+    "stft": [
+      "Fuel mixture correction is unusual for this situation.",
+      "Listen for a vacuum hiss at idle; check intake clamps; clean the MAF."
+    ],
+    "ltft": [
+      "Long-term fuel correction moved away from your normal.",
+      "Listen for a vacuum hiss at idle; check intake clamps; clean the MAF."
+    ],
+    "afr": [
+      "Air/fuel ratio is unusual for this situation.",
+      "If it repeats: clean the MAF and check for intake/exhaust leaks."
+    ],
+    "timing": [
+      "Ignition timing is unusual - the ECU may be pulling timing.",
+      "Check fuel quality (octane) and avoid heavy load until it clears."
+    ],
+    "rpm": [
+      "RPM is unusual for this situation (idle surge or hunting).",
+      "Check for vacuum leaks and a dirty throttle body; note any CEL."
+    ],
+    "engine_load": [
+      "Engine load is unusual for this speed/RPM.",
+      "Check the air filter and intake for leaks; dragging brake can also cause it."
+    ],
+    "boost": [
+      "Airflow (MAF) is unusual for this situation.",
+      "Check the air filter, intake boots and clean the MAF sensor."
+    ],
+    "intake_temp": [
+      "Intake air is hotter/colder than normal - heat soak in traffic is common.",
+      "If it stays high while moving, check the intercooler for debris."
+    ],
+    "throttle": [
+      "Your pedal use is unusual vs your normal - usually just driving style, not a fault."
+    ],
+    "speed": [
+      "Speed pattern is unusual vs your normal - usually just the route, not a fault."
+    ],
+    "_default": [
+      "Unusual vs your car's learned normal - not a confirmed fault.",
+      "If the same sensor keeps getting flagged, follow that sensor's steps."
+    ]
+  },
+  "look": {
+    "_about": "Which LIVE GRAPHS page shows the evidence for each warning / ML sensor family. Page names must match graph_pages.",
+    "warnings": {
+      "KNOCK": "AIR + SPARK",
+      "COOLANT CRITICAL": "TEMPS",
+      "COOLANT HIGH": "TEMPS",
+      "FUEL TRIM DRIFT": "FUEL",
+      "FUEL TRIM SWING": "FUEL",
+      "STRAINING": "TEMPS",
+      "TURBO HOT": "TEMPS"
+    },
+    "anomaly": {
+      "coolant": "TEMPS",
+      "stft": "FUEL",
+      "ltft": "FUEL",
+      "afr": "FUEL",
+      "timing": "AIR + SPARK",
+      "boost": "AIR + SPARK",
+      "rpm": "ENGINE",
+      "engine_load": "ENGINE",
+      "throttle": "ENGINE",
+      "speed": "DRIVE",
+      "intake_temp": "TEMPS",
+      "o2": "O2 / CAT",
+      "_default": "ENGINE"
+    }
+  }
+}

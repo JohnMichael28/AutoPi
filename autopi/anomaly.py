@@ -48,15 +48,36 @@ ELEVATED_AFTER = 5
 DECAY = 2
 
 
+def resolve_model_path(path):
+    """Relative model paths are tried from the working directory first, then
+    from the project root (the folder above autopi/), so the model loads no
+    matter which directory the launcher starts in."""
+    if os.path.isabs(path) or os.path.exists(path):
+        return os.path.abspath(path)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, path)
+
+
 class AnomalyDetector:
-    def __init__(self, path="models/anomaly_model.joblib"):
+    def __init__(self, path="models/anomaly_model.joblib", ignore=None):
         self.ok = False
         self._bundle = None
         self._streak = 0
         self._clean = 0
         self._severity = "ok"
         self._last_regime = "normal"
-        if joblib is None or not os.path.exists(path):
+        # Features we refuse to judge (e.g. voltage - this car's module
+        # voltage reads low on every car, so it would only cause false alarms).
+        # They are pinned to the regime mean, so neither the forest nor the
+        # z-guard can flag them.
+        self.ignore = set(ignore or [])
+        self.path = resolve_model_path(path)
+        self.reason = ""
+        if joblib is None:
+            self.reason = "joblib / scikit-learn not installed in this Python"
+            return
+        if not os.path.exists(self.path):
+            self.reason = "model file not found: " + self.path
             return
         try:
             b = joblib.load(path)
@@ -75,8 +96,14 @@ class AnomalyDetector:
                 self._regimes = b["regimes"]
                 self._fallback = b.get("fallback", "normal")
             self.ok = "normal" in self._regimes or len(self._regimes) > 0
-        except Exception:
+            if self.ok:
+                self.reason = ("loaded, " + str(len(self._regimes))
+                               + " regime(s): " + ", ".join(sorted(self._regimes)))
+            else:
+                self.reason = "model file has no regimes"
+        except Exception as err:
             self.ok = False
+            self.reason = "model failed to load: " + str(err)[:120]
 
     def _bar(self, feature):
         return Z_STABLE if feature in STABLE_FEATURES else Z_NOISY
@@ -112,7 +139,7 @@ class AnomalyDetector:
         zmap = {}
         for f in self.features:
             v = snapshot.get(f, None)
-            if not isinstance(v, (int, float)):
+            if f in self.ignore or not isinstance(v, (int, float)):
                 v = baselines[f]["mean"]
             v = float(v)
             row.append(v)
@@ -157,6 +184,7 @@ class AnomalyDetector:
 
         return {"available": True, "severity": self._severity,
                 "anomalous": anomalous, "score": round(s, 4),
+                "threshold": round(float(threshold), 4),
                 "reason": reason, "regime": regime, "culprits": culprits}
 
     def reset(self):

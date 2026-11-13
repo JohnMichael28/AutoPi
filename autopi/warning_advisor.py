@@ -114,17 +114,10 @@ class WarningAdvisor:
             elif self._fire("coolant_warn", coolant >= 106):
                 warnings.append("COOLANT HIGH (" + str(int(coolant)) + "C) - ease off and let it cool")
 
-        # ---- 3. LOW VOLTAGE (charging/battery) ----------------------------
-        # Sourced: running voltage should be ~13.5-14.5V; below ~13.0V while
-        # running means the alternator isn't keeping up (fleetrabbit + your own
-        # confirmed low-voltage catch). Only meaningful with engine running.
-        volts = _num(snap.get("voltage"))
-        rpm = _num(snap.get("rpm"))
-        if volts is not None and rpm is not None and rpm > 0:
-            if self._fire("volt_crit", volts < 12.2):
-                warnings.append("LOW VOLTAGE (" + str(volts) + "V) - charging issue, you may stall")
-            elif self._fire("volt_warn", volts < 13.0):
-                warnings.append("VOLTAGE LOW (" + str(volts) + "V) - alternator not keeping up")
+        # ---- 3. VOLTAGE: intentionally NOT checked ------------------------
+        # The OBD "control module voltage" reads under 12V on every car this
+        # has been used on, even with a healthy charging system, so it only
+        # produced false alarms. Removed at the driver's request.
 
         # ---- 4. FUEL TRIM DRIFT -------------------------------------------
         # Sourced (fleetrabbit/skanyx): STFT beyond +/-10%, LTFT beyond
@@ -172,7 +165,7 @@ class WarningAdvisor:
             return None
         for w in warnings:
             # Critical-severity phrases get the red light; everything else yellow.
-            if ("CRITICAL" in w or "KNOCK" in w or "LOW VOLTAGE" in w):
+            if ("CRITICAL" in w or "KNOCK" in w):
                 return "red"
         return "yellow"
 

@@ -7,7 +7,8 @@
 A Raspberry Pi-powered, touchscreen car diagnostic device that reads live OBD-II
 data, explains it in plain English, and detects problems before they happen.
 Built around a Fallout-style terminal "guardian" that reacts to your car's
-health in real time. Runs entirely offline in the vehicle — no cloud, no phone.
+health in real time. Runs entirely offline in the vehicle — no cloud needed; your phone
+is only used if you choose to send yourself a report.
 
 Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
 (FA24 turbo).
@@ -15,21 +16,45 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
 ## What it does
 
 - **Guardian face dashboard** — a pixel face that changes mood/color based on
-  real vehicle state (coolant, codes, fuel trims, drive mode).
-- **Four drive modes** — Highway, Track, Adventure, Camp — each showing the
-  gauges that matter for that context, with sourced warning thresholds.
-- **Live zoned gauges** — RPM, MAF, air/fuel, and load as green/yellow/red
-  bars (tachometer-style), plus a coolant trend line. Design backed by
-  automotive gauge research.
-- **Full diagnostics** — read/pending/permanent/readiness codes, freeze frame,
-  clear codes (with a two-tap confirm gate), each with a plain-English AI
-  explanation.
-- **Fuel system analysis** — live short/long-term fuel trims + O2 voltage with a
-  health verdict and AI diagnosis of the actual numbers.
-- **Warnings tab** — rule-based warnings AND ML anomalies together, timestamped,
-  each one tappable for an on-demand AI explanation with concrete next actions.
-- **Virtual dyno** — estimates horsepower from an acceleration pull (clearly
-  labeled ESTIMATED — it's an OBD acceleration method, not a real dyno).
+  real vehicle state (coolant, codes, fuel trims, drive mode, cold engine).
+- **Automatic screens** — Highway (green smile), Track (driving hard / fast),
+  Adventure (off-road), Camp (idling) switch by themselves from live data, with
+  hysteresis so they never flicker. Picking a dashboard from the menu is a
+  temporary override that hands back to automatic when the situation changes.
+- **Cold-start guide** — after a cold start the face turns blue and the screen
+  says what's happening: "COLD START – WAIT, FAST IDLE 1400 RPM" until the
+  idle settles, then "SAFE TO DRIVE OFF – GO GENTLY" (spoken too), "EASE OFF"
+  if you rev it cold, and "ENGINE WARM – ALL CLEAR" at 70 °C.
+- **Fast live data** — RPM, throttle and speed stream on their own "fast lane"
+  thread (~10x/s) so the screen follows your foot instead of lagging behind it.
+- **Live graph pages** — a menu of scan-tool style pages (ENGINE, FUEL, TEMPS,
+  AIR + SPARK, O2 / CAT, DRIVE) plus the zoned bar gauges. Each page shows the
+  last 60 s with current/min/max and dashed warning limits.
+- **Full diagnostics** — read/pending/permanent/readiness codes, Mode 06,
+  freeze frame. Every screen uses one layout: **green = raw data from the
+  car, yellow = what it means**. Raw data shows immediately; the AI
+  translation fills in after. Clear codes is spam-proof (CANCEL is the big
+  button where fast taps land; CLEAR is disabled for the first 2 s).
+- **One-tap HEALTH CHECK** — codes, pending, permanent, readiness, Mode 06,
+  live sensors vs sourced ranges, warm-up and ML in 8 fixed sections, each
+  with numbered "what to do" steps, plus an AI summary.
+- **Full diagnostic REPORT for your mechanic** — vehicle ID (VIN, ECU),
+  check-engine status, distance/time since codes cleared, the full health
+  check, freeze frame, live snapshot, this drive's warnings and the last dyno
+  pull. Tap **SEND TO PHONE** → scan the QR code → it opens as a page on your
+  phone → Save as PDF and send it to the shop. Also copies to a USB stick.
+- **Fuel system analysis** — live trims + O2 with a health verdict and an AI
+  diagnosis that updates only when the numbers really change.
+- **Warnings tab** — rule-based warnings AND the ML anomaly monitor together,
+  each with "DO" steps from a rule playbook, tappable for AI detail. The ML
+  section always shows whether the model is running (and why not, if not).
+- **"Look here" guide** — if a warning or a sustained anomaly keeps
+  happening, the talking face says what's wrong and the first thing to do,
+  then opens the graph page that shows it.
+- **Automatic virtual dyno** — always watching; every hard pull is recorded
+  by itself with a timestamp (no START button). Browse your last 10 pulls.
+  Clearly labeled ESTIMATED (OBD acceleration method with road-load
+  correction, not a real dyno).
 - **Tuning monitor** — live knock/timing watch with debounced alarms.
 - **Offline voice assistant** — push-to-talk questions answered by the on-device
   language model, using your car's live data. Fully offline speech recognition
@@ -59,6 +84,34 @@ is simply skipped — the local SLM already answered.
 
 **Tier 3 — Offline dictionary.** Built-in plain-English descriptions of common
 OBD-II codes as a final fallback.
+
+**Responsive by design.** AI questions are serialized (the Pi model answers one
+at a time), identical questions share one answer, answers are cached for 10
+minutes, an unreachable laptop fails in 2 s and is skipped for a while, and
+every screen retries on its own ("trying again in N s") while you stay on it —
+you never have to back out and reopen a screen to get an answer.
+
+## AI guardrails — the model proposes, the code decides
+
+Every model gets a **SECURITY block** in its prompt: only AutoPi and the driver
+can instruct it, anything inside `<<DATA ... <<END DATA>>` (sensor readings,
+code descriptions, tool results) is information and never instructions, and
+any attempt to instruct it is reported back to the driver instead of obeyed.
+On top of the prompt, code enforces it:
+
+- **Injection scanner** on everything going into and coming out of a model.
+- **Judge** — a code-level check (and, on the laptop tier, an optional judge
+  model that can only veto) that blocks invented numbers or codes, any claim
+  that an action was performed on the car, and instruction-like text.
+- **Copilot agent** — a tool-using assistant run as a state machine
+  (READY → DECIDE → TOOL → REVIEW → DONE/STOPPED) with hard budgets (deadline,
+  turns, tool calls) and a per-profile tool allow-list; the math (injector
+  duty, relative compression...) is done by trusted Python tools, not the
+  model.
+- **Security log** — every blocked answer or injection attempt is written to
+  `logs/security.jsonl` and shown in the WARNINGS tab.
+- **Read-only** — AutoPi never writes engine settings. It tells you exactly
+  what to check and do; you approve and do it.
 
 ## The ML anomaly system — contextual detection
 
@@ -100,6 +153,11 @@ sustained anomalies reach "elevated." The ML is surfaced as an **advisory**
 alongside the rule-based warning system, which remains the authoritative
 real-time safety layer.
 
+Two details keep live inference honest: rows are logged and scored at the same
+~1.2 s spacing the model was trained on (live data is now much faster, which
+would otherwise change what the rolling features mean), and module voltage is
+pinned to its baseline and never judged (see limitations).
+
 ## Hardware
 
 - Raspberry Pi 4 Model B (4GB)
@@ -115,8 +173,15 @@ real-time safety layer.
 - **Background threading** — OBD reads and the ML logger run off the 60fps
   render loop. All OBD access is serialized through a lock, since python-OBD is
   not thread-safe.
-- **Tiered polling** — fast-changing PIDs read every cycle, slow ones rotated
-  in, so no single read cycle overloads the connection.
+- **Fast lane + tiered polling** — RPM/throttle/speed have their own thread
+  reading as fast as the adapter answers; the snapshot thread reads coolant and
+  load each cycle and rotates the slow PIDs in. Diagnostic reads take
+  **priority** (live polling pauses) so codes and monitors come back quickly.
+- **Real start-up loader** — the boot screen actually loads and self-tests
+  everything once (OBD link, fast lane, security guard and judge self-tests,
+  copilot, ML model, and a warm-up question to the on-Pi model so the first
+  real answer is fast). It shows one status line, a progress bar and only the
+  problems; the full log goes to `logs/boot.log`.
 - **Tiered, offline-first AI** — local SLM primary, home Ollama optional,
   offline dictionary as a floor. The device never pretends to have data it
   doesn't.
@@ -156,6 +221,13 @@ produced a stable live connection.
 - **ML anomaly detection is an advisory.** Even regime-aware, it flags some
   legitimate readings as unusual (~5.7%). It complements, and never overrides,
   the rule-based warnings.
+- **Voltage is not judged.** The OBD "control module voltage" reads under 12 V
+  on every car this was used on, even with a healthy charging system, so all
+  voltage warnings were removed and the ML ignores it.
+- **AutoPi cannot "fix" the car.** It is read-only over OBD-II; the warnings,
+  health check and report give exact steps for you or a mechanic to do.
+- **Report sharing needs a shared network.** The phone and the Pi must be on
+  the same WiFi (home, or the phone's hotspot) for the QR link to open.
 
 ## Setup
 
@@ -173,7 +245,24 @@ produced a stable live connection.
 6. Run on the Pi console (boot-to-console + autologin) so KMSDRM can own the
    display. Auto-launch on login via `~/.bash_profile` (tty1 only).
 7. To (re)train the ML model on a laptop: `pip install -r requirements-train.txt`,
-   then `python autopi/train_model.py <driving_log.csv>`.
+   then `python autopi/train_model.py <driving_log.csv>`. Copy
+   `models/anomaly_model.joblib` to `~/autopi-project/models/` on the Pi (keep
+   the same scikit-learn version on both).
+8. Tests (no car needed): `python3 -m unittest discover tests`.
+
+### Deploying from the laptop (Git Bash)
+
+```
+scp autopi/*.py autopi/playbook.json john288@autopi.local:~/autopi-project/autopi/
+scp autopi/prompts/*.md john288@autopi.local:~/autopi-project/autopi/prompts/
+scp main_ui.py config.json requirements.txt john288@autopi.local:~/autopi-project/
+scp tests/*.py john288@autopi.local:~/autopi-project/tests/
+ssh john288@autopi.local "sudo reboot"
+```
+
+All tunable values (poll rates, warm-up thresholds, dyno thresholds, AI
+timeouts/retries, graph pages, report sharing) live in `config.json`; see
+`config.example.json`.
 
 ## License
 

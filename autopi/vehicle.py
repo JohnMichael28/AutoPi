@@ -10,7 +10,7 @@ class Reading:
                  rpm=None, speed=None, engine_load=None, throttle=None,
                  voltage=None, timing=None, afr=None, fuel_level=None,
                  stft_b1=None, ltft_b1=None, o2_b1s2=None,
-                 vin="TEST_OUTBACK"):
+                 run_time=None, vin="TEST_OUTBACK"):
         self.timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         self.vin = vin
         self.coolant_temp = coolant_temp
@@ -27,6 +27,7 @@ class Reading:
         self.stft_b1 = stft_b1
         self.ltft_b1 = ltft_b1
         self.o2_b1s2 = o2_b1s2
+        self.run_time = run_time          # engine run time, seconds
         
 
     def to_dict(self):
@@ -73,8 +74,16 @@ class Vehicle:
     talks to the car ONLY through this class - the raw obd connection is
     private and hidden (encapsulation / information hiding)."""
 
-    def __init__(self, port="/dev/pts/2", vin="TEST_OUTBACK"):
+    # FAST LANE: these PIDs are read on their own thread as fast as the
+    # adapter answers (RPM gets every other slot), so the screen follows
+    # the throttle instead of lagging ~2 s behind it.
+    FAST_SEQUENCE = ["RPM", "THROTTLE_POS", "RPM", "SPEED"]
+
+    def __init__(self, port="/dev/pts/2", vin="TEST_OUTBACK", fast=False,
+                 timeout=1.0):
         self.__port = port          # private
+        self.__fast_mode = bool(fast)    # python-OBD fast mode (see connect)
+        self.__timeout = timeout
         self.vin = vin
         self.__connection = None    # private - the raw obd connection
         self.__last_reconnect = 0.0       # time of last reconnect attempt
@@ -82,13 +91,23 @@ class Vehicle:
         # Tiered polling: rotate through slow PIDs ONE per call so each
         # snapshot reads 4 fast + 1 slow = 5 queries, never an 11-query burst.
         self.__slow_cache = {}
-        self.__slow_keys = ["intake_temp", "throttle", "voltage",
-                            "timing", "fuel_level", "boost_psi", "afr",
-                            "stft_b1", "ltft_b1", "o2_b1s2"]
+        # Throttle lives in the FAST tier (read every cycle): auto track mode
+        # and AutoDyno need it fresh, not ~7 s stale from the rotation.
+        self.__slow_keys = ["intake_temp", "timing", "fuel_level",
+                            "boost_psi", "afr", "stft_b1", "ltft_b1",
+                            "o2_b1s2", "run_time", "boost_psi"]
         self.__slow_index = 0
         self.__dead_reads = 0     # consecutive all-failed read cycles
         import threading
         self.__lock = threading.Lock()   # serialize OBD access (not thread-safe)
+        self.__fast = {}                 # name -> (value, monotonic time)
+        self.__fast_thread = None
+        self.__fast_running = False
+        self.__fast_gap = 0.005
+        self.__priority = 0              # >0 = a diagnostic read is running
+        self.__priority_lock = threading.Lock()
+        self.__rpm_times = []            # for the measured RPM refresh rate
+        self.__last_reading = None
     def connect(self):
         # Open the connection. fast=False + a short timeout are the documented
         # fixes for Raspberry Pi/ELM327 query hangs (python-OBD issue #149 and
@@ -98,7 +117,8 @@ class Vehicle:
         import time as _t
         for attempt in range(5):
             try:
-                self.__connection = obd.OBD(self.__port, fast=False, timeout=1.0,
+                self.__connection = obd.OBD(self.__port, fast=self.__fast_mode,
+                                            timeout=self.__timeout,
                                             check_voltage=False)
                 if self.__connection.is_connected():
                     return self.__connection.status()
@@ -126,7 +146,8 @@ class Vehicle:
             pass
         time.sleep(1.0)     # let the adapter settle after close before reopening
         try:
-            self.__connection = obd.OBD(self.__port, fast=False, timeout=1.0,
+            self.__connection = obd.OBD(self.__port, fast=self.__fast_mode,
+                                        timeout=self.__timeout,
                                         check_voltage=False)
             if self.__connection.is_connected():
                 return True
@@ -141,6 +162,15 @@ class Vehicle:
         # collide and cause "Device disconnected while reading".
         if self.__connection is None:
             return None
+        # Skip PIDs this car doesn't support. Without this, python-OBD logs
+        # "'b'010F': Intake Air Temp' is not supported" on EVERY poll, which
+        # floods the console and wastes a serial round-trip. The supported
+        # list comes from the car's own Mode 01 PID bitmaps at connect time.
+        try:
+            if not self.__connection.supports(command):
+                return None
+        except Exception:
+            pass
         with self.__lock:
             try:
                 response = self.__connection.query(command)
@@ -150,7 +180,86 @@ class Vehicle:
             except Exception:
                 return None
 
+    # ---- fast lane --------------------------------------------------------
+    def start_fast_lane(self, gap_s=0.005):
+        """Start the RPM/throttle/speed thread. gap_s is a tiny pause after
+        every read so the snapshot thread and diagnostics get their turn on
+        the serial port (the lock is not fair on its own)."""
+        import threading
+        if self.__fast_thread is not None:
+            return
+        self.__fast_gap = gap_s
+        self.__fast_running = True
+        self.__fast_thread = threading.Thread(target=self.__fast_loop, daemon=True)
+        self.__fast_thread.start()
+
+    def stop_fast_lane(self):
+        self.__fast_running = False
+
+    def fast_lane_running(self):
+        return self.__fast_running and self.__fast_thread is not None
+
+    def __fast_loop(self):
+        index = 0
+        while self.__fast_running:
+            if self.__priority > 0 or self.__connection is None:
+                time.sleep(0.05)          # a diagnostic read has the port
+                continue
+            name = self.FAST_SEQUENCE[index % len(self.FAST_SEQUENCE)]
+            index += 1
+            cmd = getattr(obd.commands, name, None)
+            value = self.read_number(cmd) if cmd is not None else None
+            now = time.monotonic()
+            if value is not None:
+                self.__fast[name] = (value, now)
+                if name == "RPM":
+                    self.__rpm_times.append(now)
+                    if len(self.__rpm_times) > 40:
+                        self.__rpm_times = self.__rpm_times[-40:]
+            time.sleep(self.__fast_gap)
+
+    def fast_values(self, max_age_s=2.0):
+        """{"RPM": v, "THROTTLE_POS": v, "SPEED": v (km/h)} - None if stale."""
+        now = time.monotonic()
+        out = {}
+        for name in ("RPM", "THROTTLE_POS", "SPEED"):
+            item = self.__fast.get(name)
+            out[name] = item[0] if item and now - item[1] <= max_age_s else None
+        return out
+
+    def fast_sample(self, name):
+        """(value, monotonic time it was read) or (None, None)."""
+        item = self.__fast.get(name)
+        if not item:
+            return None, None
+        return item
+
+    def rpm_rate_hz(self):
+        """Measured RPM refreshes per second over the last ~40 reads."""
+        t = self.__rpm_times
+        if len(t) < 2 or time.monotonic() - t[-1] > 2.0:
+            return 0.0
+        return round((len(t) - 1) / (t[-1] - t[0]), 1) if t[-1] > t[0] else 0.0
+
+    def priority(self):
+        """with vehicle.priority(): ...  - pauses the fast lane so a
+        diagnostic read (codes, readiness, Mode 06) gets the port right away
+        instead of queueing behind live-data reads."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _hold():
+            with self.__priority_lock:
+                self.__priority += 1
+            try:
+                yield self
+            finally:
+                with self.__priority_lock:
+                    self.__priority -= 1
+        return _hold()
+
     def close(self):
+        self.stop_fast_lane()
         if self.__connection is not None:
             self.__connection.close()
 
@@ -256,8 +365,22 @@ class Vehicle:
             cmd = getattr(obd.commands, name, None)
             return self.read_number(cmd) if cmd is not None else None
 
-        rpm = try_cmd("RPM")
-        speed = try_cmd("SPEED")
+        # A diagnostic read has priority: reuse the last reading instead of
+        # queueing more live-data requests in front of it.
+        if self.__priority > 0 and self.__last_reading is not None:
+            return self.__last_reading
+
+        if self.fast_lane_running():
+            # RPM/throttle/speed come from the fast lane (already fresh);
+            # this cycle only spends serial time on the slower values.
+            fast = self.fast_values()
+            rpm = fast.get("RPM")
+            speed = fast.get("SPEED")
+            throttle = fast.get("THROTTLE_POS")
+        else:
+            rpm = try_cmd("RPM")
+            speed = try_cmd("SPEED")
+            throttle = try_cmd("THROTTLE_POS")
         coolant = try_cmd("COOLANT_TEMP")
         load = try_cmd("ENGINE_LOAD")
 
@@ -286,10 +409,8 @@ class Vehicle:
             self.__slow_cache["afr"] = self.get_afr()
         elif key == "intake_temp":
             self.__slow_cache["intake_temp"] = try_cmd("INTAKE_TEMP")
-        elif key == "throttle":
-            self.__slow_cache["throttle"] = try_cmd("THROTTLE_POS")
-        elif key == "voltage":
-            self.__slow_cache["voltage"] = try_cmd("CONTROL_MODULE_VOLTAGE")
+        elif key == "run_time":
+            self.__slow_cache["run_time"] = try_cmd("RUN_TIME")
         elif key == "timing":
             self.__slow_cache["timing"] = try_cmd("TIMING_ADVANCE")
         elif key == "fuel_level":
@@ -304,14 +425,14 @@ class Vehicle:
             cmd = getattr(obd.commands, "O2_B1S2", None)
             self.__slow_cache["o2_b1s2"] = self.read_number(cmd) if cmd else None
         c = self.__slow_cache
-        return Reading(
+        self.__last_reading = Reading(
             coolant_temp=coolant,
             intake_temp=c.get("intake_temp"),
             boost_psi=c.get("boost_psi"),
             rpm=rpm,
             speed=speed,
             engine_load=load,
-            throttle=c.get("throttle"),
+            throttle=throttle,
             voltage=c.get("voltage"),
             timing=c.get("timing"),
             afr=c.get("afr"),
@@ -319,8 +440,10 @@ class Vehicle:
             stft_b1=c.get("stft_b1"),
             ltft_b1=c.get("ltft_b1"),
             o2_b1s2=c.get("o2_b1s2"),
+            run_time=c.get("run_time"),
             vin=self.vin,
-        )  
+        )
+        return self.__last_reading  
 
     def is_connected(self):
         try:

@@ -22,3 +22,5 @@ freeze.txt
 monitor_log.txt
 test_queue.json
 old/
+# AI security incident log (local to each device)
+logs/

@@ -1,34 +1,325 @@
 {
-    "obd_port": "/dev/ttyUSB0",
-    "coolant_warn_c": 105,
-    "idle_warn_seconds": 1800,
-    "voltage_warn": 12.2,
-    "log_every": 5,
-    "dyno_calibration": 1.0,
-    "ollama_ip": "YOUR_OLLAMA_LAPTOP_IP_HERE",
-    "touch": {
-        "device": "/dev/input/event3",
-        "quit_corner": "top_left",
-        "quit_hold_seconds": 2.0,
-        "quit_zone_px": 80
+  "obd_port": "/dev/ttyUSB0",
+  "coolant_warn_c": 105,
+  "idle_warn_seconds": 1800,
+  "voltage_warn": 12.2,
+  "log_every": 5,
+  "dyno_calibration": 1.0,
+  "ollama_ip": "YOUR_OLLAMA_LAPTOP_IP_HERE",
+  "touch": {
+    "device": "/dev/input/event3",
+    "quit_corner": "top_left",
+    "quit_hold_seconds": 2.0,
+    "quit_zone_px": 80
+  },
+  "voice": {
+    "model_path": "vosk-model-small-en-us-0.15",
+    "device_name": "USB Audio",
+    "sample_rate": 44100,
+    "record_seconds": 5
+  },
+  "dyno": {
+    "vehicle_weight_lbs": 4200,
+    "drivetrain_loss": 0.15,
+    "min_pull_speed_mph": 10,
+    "max_pull_speed_mph": 90,
+    "pull_throttle_pct": 60.0,
+    "pull_load_pct": 85.0,
+    "start_accel_ms2": 0.8,
+    "keep_accel_ms2": 0.2,
+    "end_grace_s": 0.8,
+    "min_pull_s": 2.0,
+    "min_points": 5,
+    "accel_window_s": 1.2,
+    "cda_m2": 0.86,
+    "crr": 0.012,
+    "rpm_bin": 100,
+    "keep": 10
+  },
+  "gauges": {
+    "rpm": {
+      "min": 0,
+      "max": 7000,
+      "warn": 5500,
+      "danger": 6500,
+      "unit": ""
     },
-    "voice": {
-        "model_path": "vosk-model-small-en-us-0.15",
-        "device_name": "USB Audio",
-        "sample_rate": 44100,
-        "record_seconds": 5
+    "boost": {
+      "min": 0,
+      "max": 25,
+      "warn": 15,
+      "danger": 20,
+      "unit": "psi"
     },
-    "dyno": {
-        "vehicle_weight_lbs": 4200,
-        "drivetrain_loss": 0.15,
-        "min_pull_speed_mph": 15,
-        "max_pull_speed_mph": 80
+    "afr": {
+      "min": 10,
+      "max": 18,
+      "warn": 15,
+      "danger": 15.5,
+      "unit": ""
     },
-    "gauges": {
-        "rpm":     {"min": 0,   "max": 7000, "warn": 5500, "danger": 6500, "unit": ""},
-        "boost":   {"min": 0,   "max": 25,   "warn": 15,   "danger": 20,   "unit": "psi"},
-        "afr":     {"min": 10,  "max": 18,   "warn": 15,   "danger": 15.5, "unit": ""},
-        "load":    {"min": 0,   "max": 100,  "warn": 85,   "danger": 95,   "unit": "%"},
-        "coolant": {"warn": 105, "danger": 115}
+    "load": {
+      "min": 0,
+      "max": 100,
+      "warn": 85,
+      "danger": 95,
+      "unit": "%"
+    },
+    "coolant": {
+      "warn": 105,
+      "danger": 115
     }
+  },
+  "drive_mode": {
+    "idle_max_mph": 2.0,
+    "idle_enter_s": 3.0,
+    "moving_exit_mph": 5.0,
+    "track_enter_mph": 75.0,
+    "track_exit_mph": 65.0,
+    "track_throttle_pct": 70.0,
+    "track_rpm": 4500.0,
+    "track_enter_s": 2.0,
+    "track_exit_s": 8.0,
+    "offroad_max_mph": 25.0,
+    "offroad_load_pct": 55.0,
+    "offroad_enter_s": 10.0,
+    "offroad_exit_s": 15.0
+  },
+  "copilot": {
+    "prompts_dir": "autopi/prompts",
+    "security_log": "logs/security.jsonl",
+    "tiers": [
+      {
+        "name": "laptop",
+        "base_url": "http://YOUR-LAPTOP-IP:11434",
+        "model": "llama3.2",
+        "timeout_s": 30
+      },
+      {
+        "name": "pi",
+        "base_url": "http://127.0.0.1:8080",
+        "model": "qwen3-0.6b",
+        "timeout_s": 25
+      }
+    ],
+    "retry_after_s": 60,
+    "profiles": {
+      "driving": {
+        "allow": [
+          "read"
+        ]
+      },
+      "service": {
+        "allow": [
+          "read",
+          "actuate"
+        ]
+      }
+    },
+    "max_turns": 5,
+    "max_tool_calls": 3,
+    "deadline_s": 45,
+    "max_answer_chars": 600,
+    "judge": {
+      "llm_enabled": true,
+      "llm_tiers": [
+        "laptop"
+      ]
+    }
+  },
+  "warmup": {
+    "running_rpm": 400,
+    "settled_rpm": 1000,
+    "settle_hold_s": 3,
+    "min_wait_s": 20,
+    "max_wait_s": 90,
+    "warm_coolant_c": 70,
+    "gentle_rpm": 3500,
+    "gentle_throttle_pct": 60,
+    "all_clear_show_s": 8,
+    "moving_mph": 3
+  },
+  "anomaly": {
+    "model_path": "models/anomaly_model.joblib",
+    "ignore_features": [
+      "voltage",
+      "voltage_d"
+    ]
+  },
+  "poll": {
+    "obd_fast": true,
+    "obd_timeout_s": 1.0,
+    "fast_lane": true,
+    "fast_lane_gap_s": 0.005,
+    "snapshot_interval_s": 0.15,
+    "ml_row_interval_s": 1.2
+  },
+  "issue_guide": {
+    "persist_s": 8,
+    "cooldown_s": 300,
+    "ml_levels": [
+      "elevated"
+    ]
+  },
+  "graph_window_s": 60,
+  "graph_pages": [
+    {
+      "name": "ENGINE",
+      "traces": [
+        {
+          "key": "rpm",
+          "label": "RPM",
+          "unit": "",
+          "min": 0,
+          "max": 7000,
+          "warn_high": 6000
+        },
+        {
+          "key": "throttle",
+          "label": "THROTTLE",
+          "unit": "%",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "engine_load",
+          "label": "LOAD",
+          "unit": "%",
+          "min": 0,
+          "max": 100,
+          "warn_high": 95
+        }
+      ]
+    },
+    {
+      "name": "FUEL",
+      "traces": [
+        {
+          "key": "stft_b1",
+          "label": "SHORT TRIM",
+          "unit": "%",
+          "min": -25,
+          "max": 25,
+          "warn_high": 10,
+          "warn_low": -10
+        },
+        {
+          "key": "ltft_b1",
+          "label": "LONG TRIM",
+          "unit": "%",
+          "min": -25,
+          "max": 25,
+          "warn_high": 10,
+          "warn_low": -10
+        },
+        {
+          "key": "afr",
+          "label": "CMD AIR/FUEL",
+          "unit": "",
+          "min": 10,
+          "max": 18
+        }
+      ]
+    },
+    {
+      "name": "TEMPS",
+      "traces": [
+        {
+          "key": "coolant_temp",
+          "label": "COOLANT",
+          "unit": "C",
+          "min": 0,
+          "max": 120,
+          "warn_high": 105
+        },
+        {
+          "key": "intake_temp",
+          "label": "INTAKE AIR",
+          "unit": "C",
+          "min": -20,
+          "max": 80,
+          "warn_high": 60
+        }
+      ]
+    },
+    {
+      "name": "AIR + SPARK",
+      "traces": [
+        {
+          "key": "boost",
+          "label": "MAF AIRFLOW",
+          "unit": "g/s",
+          "min": 0,
+          "max": 200
+        },
+        {
+          "key": "timing",
+          "label": "TIMING",
+          "unit": "deg",
+          "min": -15,
+          "max": 45
+        }
+      ]
+    },
+    {
+      "name": "O2 / CAT",
+      "traces": [
+        {
+          "key": "o2_b1s2",
+          "label": "REAR O2",
+          "unit": "V",
+          "min": 0,
+          "max": 1.1,
+          "warn_high": 0.95,
+          "warn_low": 0.1
+        },
+        {
+          "key": "stft_b1",
+          "label": "SHORT TRIM",
+          "unit": "%",
+          "min": -25,
+          "max": 25,
+          "warn_high": 10,
+          "warn_low": -10
+        }
+      ]
+    },
+    {
+      "name": "DRIVE",
+      "traces": [
+        {
+          "key": "speed",
+          "label": "SPEED",
+          "unit": "mph",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "rpm",
+          "label": "RPM",
+          "unit": "",
+          "min": 0,
+          "max": 7000,
+          "warn_high": 6000
+        }
+      ]
+    }
+  ],
+  "ai": {
+    "local_timeout_s": 45,
+    "local_max_tokens": 90,
+    "home_timeout_s": 30,
+    "connect_timeout_s": 2,
+    "home_skip_s": 120,
+    "rescan_every_s": 300,
+    "cache_ttl_s": 600,
+    "retry_attempts": 3,
+    "retry_wait_s": 4,
+    "retry_slow_s": 20
+  },
+  "report": {
+    "port": 8088,
+    "share_minutes": 15,
+    "car_name": "2023 Subaru Outback Wilderness (FA24 turbo, CVT)"
+  }
 }

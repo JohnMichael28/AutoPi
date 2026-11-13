@@ -2,6 +2,8 @@
 classes unchanged, but paints results on the pygame touchscreen instead of
 the old terminal print()/input() view. Runs a reader ONCE when opened
 (on-demand, O(1)), caches formatted lines, scrolls if they overflow."""
+import time
+
 import pygame
 
 TERM_GREEN = (65, 255, 120)
@@ -29,17 +31,31 @@ class DiagScreen:
         self._loading = False
         self._reader = None
 
-    def open(self, reader):
+    KIND_COLORS = {"head": TERM_DIM, "dim": TERM_DIM, "raw": TERM_GREEN,
+                   "ai": WARN_YELLOW}
+
+    def open(self, reader, priority=None):
+        """priority: optional context-manager factory (VehicleData.priority)
+        that pauses live polling so this read gets the OBD port at once."""
         import threading
+        self._token = getattr(self, "_token", 0) + 1
+        self._last_draw = time.monotonic()   # counts as shown
         self._title = reader.name()
         self._scroll = 0
         self._reader = reader
+        self._priority = priority
         self._lines = [("Reading from car...", TERM_DIM)]
         self._loading = True
         # Run the (possibly slow / hang-prone) OBD read off the UI thread so
         # a flaky connection can't freeze the render loop. O(1) work, 1 thread.
-        self._thread = threading.Thread(target=self._background_read, daemon=True)
+        self._thread = threading.Thread(target=self._background_read,
+                                        args=(self._token,), daemon=True)
         self._thread.start()
+
+    def _format_raw(self, raw):
+        result = {"raw": raw, "plain_english": ""}
+        lines = self._format_result(result)
+        return lines[:-1]       # drop the empty plain-English line
 
     def _format_result(self, result):
         # Shared formatter for both the threaded and sync read paths. Wraps
@@ -65,20 +81,82 @@ class DiagScreen:
             lines.append((chunk, WARN_YELLOW))
         return lines
 
-    def _background_read(self):
+    def _background_read(self, token):
+        # 1) RAW first: shown the moment the car answers (green).
+        # 2) AI translation afterwards (yellow) - a slow model never holds
+        #    the raw data hostage again.
+        reader = self._reader
         try:
-            result = self._reader.report()
+            if self._priority is not None:
+                with self._priority():
+                    raw = reader.read()
+            else:
+                raw = reader.read()
         except Exception as err:
-            self._lines = [("Read failed:", TERM_DIM), (str(err), WARN_YELLOW)]
-            self._loading = False
+            if token == self._token:
+                self._lines = [("Read failed:", TERM_DIM), (str(err), WARN_YELLOW)]
+                self._loading = False
             return
-        self._lines = self._format_result(result)
+        if token != self._token:
+            return
+        lines = self._format_raw(raw)
+        self._lines = lines + [("AI translating...", WARN_YELLOW)]
         self._loading = False
+
+        def status(text):
+            if token == self._token:
+                self._lines = lines + [(text, WARN_YELLOW)]
+
+        def wanted():
+            return self.is_showing(token)
+        try:
+            try:
+                plain = reader.explain(raw, on_status=status, still_wanted=wanted)
+            except TypeError:
+                plain = reader.explain(raw)       # older reader signature
+        except Exception as err:
+            plain = "(AI explanation unavailable: " + str(err)[:60] + ")"
+        if token != self._token:
+            return
+        out = list(lines)
+        for chunk in self._wrap(plain, WRAP_W):
+            out.append((chunk, WARN_YELLOW))
+        self._lines = out
 
     def run_read(self):
         result = self._reader.report()
         self._lines = self._format_result(result)
         self._loading = False
+
+    def set_colored(self, title, items, keep_scroll=False):
+        """items: [(text, kind)] with kind head/raw/ai/dim. The one layout
+        rule for every screen: dim headers, GREEN raw data, YELLOW meaning."""
+        self._token = getattr(self, "_token", 0) + 1
+        self._last_draw = time.monotonic()   # counts as shown
+        self._title = title
+        if not keep_scroll:
+            self._scroll = 0
+        self._loading = False
+        self._reader = None
+        colored = []
+        for text, kind in items:
+            color = self.KIND_COLORS.get(kind, TERM_GREEN)
+            if len(text) > WRAP_W:
+                for chunk in self._wrap(text, WRAP_W):
+                    colored.append((chunk, color))
+            else:
+                colored.append((text, color))
+        self._lines = colored
+        return self._token
+
+    def current_token(self):
+        return getattr(self, "_token", 0)
+
+    def is_showing(self, token):
+        """True while THIS content is still on screen (same token, drawn in
+        the last 3 s). Background AI retries stop once you leave."""
+        return (token == getattr(self, "_token", 0)
+                and time.monotonic() - getattr(self, "_last_draw", 0.0) < 3.0)
 
     def set_message(self, title, body_lines):
         # For non-reader screens (report, fuel, engineer, clear-codes).
@@ -86,6 +164,8 @@ class DiagScreen:
         # / "PLAIN ENGLISH") is yellow; everything else green. Keeps color
         # meaning consistent across every screen: yellow = AI interpretation.
         # Every line is wrapped so long content can't run off the right edge.
+        self._token = getattr(self, "_token", 0) + 1
+        self._last_draw = time.monotonic()   # counts as shown
         self._title = title
         self._scroll = 0
         self._loading = False
@@ -114,17 +194,21 @@ class DiagScreen:
 
     @staticmethod
     def _wrap(text, width):
-        words = str(text).split()
+        # Keeps the line's leading indent on every wrapped piece, so indented
+        # steps ("  1. ...") stay lined up instead of snapping to the margin.
+        text = str(text)
+        indent = text[:len(text) - len(text.lstrip(" "))]
+        words = text.split()
         lines = []
         current = ""
         for word in words:
-            if len(current) + len(word) + 1 <= width:
+            if len(indent) + len(current) + len(word) + 1 <= width:
                 current = (current + " " + word).strip()
             else:
-                lines.append(current)
+                lines.append(indent + current)
                 current = word
         if current:
-            lines.append(current)
+            lines.append(indent + current)
         return lines if lines else [""]
 
     def scroll(self, direction):
@@ -143,6 +227,7 @@ class DiagScreen:
         return len(self._lines) > visible
 
     def draw(self, surface):
+        self._last_draw = time.monotonic()
         surface.fill(TERM_BG)
         surface.blit(self.font_title.render(self._title, True, TERM_GREEN), (20, 18))
         pygame.draw.line(surface, TERM_DIM, (20, 54), (self.width - 20, 54), 2)
