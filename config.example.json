@@ -321,5 +321,44 @@
     "cache": "data/modules.json",
     "sweep_from": "700",
     "sweep_to": "7F7"
+  },
+  "storage": {
+    "archive_dir": "data/archive",
+    "roll": [
+      "data/driving_log_v2.csv",
+      "data/warning_log.csv"
+    ],
+    "legacy": [
+      "data/driving_log.csv"
+    ],
+    "keep_days": 90,
+    "max_archive_mb": 2048,
+    "reports_dir": "reports",
+    "keep_reports": 20,
+    "text_logs": [
+      "logs/boot.log",
+      "logs/security.jsonl"
+    ],
+    "max_text_log_kb": 512,
+    "min_free_mb": 500,
+    "log_flush_s": 60,
+    "log_flush_rows": 50,
+    "protect": [
+      "config.json",
+      "models",
+      "data/modules.json",
+      "reports/latest.html"
+    ]
+  },
+  "install": {
+    "llama_dir": "~/llama.cpp",
+    "llama_repo": "https://github.com/ggml-org/llama.cpp",
+    "model_dir": "~/models",
+    "model_file": "Qwen_Qwen3-0.6B-Q4_K_M.gguf",
+    "model_url": "https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf",
+    "llama_args": "-t 3 -c 2048 --host 127.0.0.1 --port 8080",
+    "llama_cpus": "1,2,3",
+    "vosk_dir": "vosk-model-small-en-us-0.15",
+    "vosk_url": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
   }
 }

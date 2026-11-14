@@ -39,6 +39,8 @@ class WarningLog:
                 self.__active[w] = stamp
                 self.__session.insert(0, (stamp, w))   # newest first
                 try:
+                    # File may have been archived at a month change.
+                    self.__ensure_file()
                     with open(self.__path, "a", newline="") as f:
                         csv.writer(f).writerow([stamp, w])
                 except Exception:

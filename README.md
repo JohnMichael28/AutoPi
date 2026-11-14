@@ -254,36 +254,73 @@ produced a stable live connection.
   says "Not authorized", let the app run `nmcli` without a password:
   `sudo visudo -f /etc/sudoers.d/autopi-nmcli` and add
   `john288 ALL=(root) NOPASSWD: /usr/bin/nmcli`.
+- **A hard power cut mid-drive can lose up to a minute of ML log rows**
+  (the batch not yet written). A normal key-off loses nothing: the batch is
+  written as soon as the engine stops.
 - **TEXT QR holds a summary, not the whole report** (QR codes max out around
   a page of text); the full report still goes via WiFi or USB.
 
 ## Setup
 
-1. Copy `config.example.json` to `config.json` and set your values (OBD port,
-   etc.).
-2. Install system packages on the Pi: `sudo apt install python3-pygame
-   python3-full libportaudio2 cmake git`
-3. Create a venv with system packages and install requirements:
-   `python3 -m venv venv --system-site-packages && source venv/bin/activate && pip install -r requirements.txt`
-4. Download the Vosk speech model into the project directory.
-5. **Local SLM:** build `llama.cpp` (`cmake -B build -DGGML_NATIVE=ON && cmake
-   --build build --config Release -j4`), download a Qwen3-0.6B Q4_K_M GGUF into
-   `~/models/`, and install the provided `llama-server` systemd service (pinned
-   with `taskset -c 1,2,3`, `-t 3`) so it auto-starts on boot.
-6. Run on the Pi console (boot-to-console + autologin) so KMSDRM can own the
-   display. Auto-launch on login via `~/.bash_profile` (tty1 only).
-7. To (re)train the ML model on a laptop: `pip install -r requirements-train.txt`,
-   then `python autopi/train_model.py <driving_log.csv>`. Copy
-   `models/anomaly_model.joblib` to `~/autopi-project/models/` on the Pi (keep
-   the same scikit-learn version on both).
-8. Tests (no car needed): `python3 -m unittest discover tests`.
+### One command (fresh SD card or rebuild)
+
+Flash **Raspberry Pi OS Lite (64-bit)** with user `john288`, hostname
+`autopi` and your WiFi set in Raspberry Pi Imager. Boot, SSH in, then:
+
+```
+git clone https://github.com/JohnMichael28/AutoPi.git ~/autopi-project
+cd ~/autopi-project && bash install.sh
+```
+
+`install.sh` does everything: system packages (including Debian's pygame for
+the KMSDRM display), boot-to-console autologin, device groups, the venv
+(`--system-site-packages`) and Python packages, the Vosk voice model,
+building `llama.cpp`, downloading Qwen3-0.6B, the `llama-server` service
+(pinned with `taskset -c 1,2,3`, `-t 3`), the `nmcli` permission for report
+sharing, system logs in RAM, and the tty1 autostart. The `llama.cpp` build
+takes 20-40 minutes on a Pi 4. Every step checks first and skips what's
+already done, so it's safe to re-run on a working Pi; `bash install.sh --dry-run`
+shows what it would do. Download URLs and paths are in the `install` block of
+`config.json`. Full log: `logs/install.log`.
+
+Three things are **not in git on purpose** (`.gitignore`): `config.json`,
+the trained model `models/anomaly_model.joblib`, and your driving logs. Copy
+the first two from the laptop after installing (the script prints the exact
+`scp` lines), then `sudo reboot`. Without the model the ML monitor stays off
+until you retrain; the module list rebuilds with DIAGNOSTICS > FIND MODULES.
+
+### SD-card care (automatic)
+
+- At every boot the storage keeper (`autopi/storage_keeper.py`, shown as
+  **SD CARD CLEANUP** on the boot screen) moves last month's driving and
+  warning logs into `data/archive/`, deletes archives older than 90 days or
+  beyond 2 GB (oldest first), keeps the newest 20 reports, and rotates
+  `boot.log` / `security.jsonl` at 512 KB. It never touches `config.json`,
+  `models/`, the module list or `reports/latest.html`.
+- The ML logger writes in batches (about once a minute, and immediately when
+  the engine stops or the app exits) instead of every 1.2 s.
+- If the card drops below 500 MB free, old archives go first; if it's still
+  low, logging pauses and the boot screen says so.
+- All limits are in the `storage` block of `config.json`.
+- A high-endurance card (made for dashcams) is recommended for in-car use.
+
+### Retraining the ML model
+
+On the laptop: `pip install -r requirements-train.txt`, copy the Pi's `data/`
+folder over, then train on this month plus the archived months:
+`python autopi/train_model.py data/driving_log_v2.csv data/archive/`
+(any mix of CSV files and folders). Copy `models/anomaly_model.joblib` to
+`~/autopi-project/models/` on the Pi (keep the same scikit-learn version on
+both).
+
+Tests (no car needed): `python3 -m unittest discover tests`.
 
 ### Deploying from the laptop (Git Bash)
 
 ```
 scp autopi/*.py autopi/playbook.json john288@autopi.local:~/autopi-project/autopi/
 scp autopi/prompts/*.md john288@autopi.local:~/autopi-project/autopi/prompts/
-scp main_ui.py config.json requirements.txt john288@autopi.local:~/autopi-project/
+scp main_ui.py config.json requirements.txt install.sh run_guardian.sh john288@autopi.local:~/autopi-project/
 scp tests/*.py john288@autopi.local:~/autopi-project/tests/
 ssh john288@autopi.local "sudo reboot"
 ```

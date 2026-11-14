@@ -9,6 +9,8 @@ the false positives the global model produced, where legitimate cold-start and
 high-load readings looked 'anomalous' against a blurred all-driving average.
 
 Usage:  python train_model.py driving_log.csv
+        python train_model.py data/driving_log_v2.csv data/archive/
+        (any mix of CSV files and folders - this month plus archived months)
 Outputs: models/anomaly_model.joblib  (a dict of per-regime bundles + meta)
 """
 import sys
@@ -62,11 +64,11 @@ def train_one(df_reg, name):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python train_model.py <driving_log.csv>")
+        print("Usage: python train_model.py <driving_log.csv | folder> [more ...]")
         return
-    csv_path = sys.argv[1]
+    csv_paths = sys.argv[1:]
 
-    df = build_features(csv_path)
+    df = build_features(csv_paths)
     print("Engineered feature rows:", len(df))
     df = df.dropna(subset=FEATURES)
     df["regime"] = df.apply(regime_of, axis=1)

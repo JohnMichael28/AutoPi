@@ -833,5 +833,214 @@ class AnomalyStatusTests(unittest.TestCase):
         self.assertEqual(feed.push({"rpm": 800})["severity"], "ok")
 
 
+# ---- SD-card care: storage keeper + batched data logger -------------------
+import tempfile
+import shutil as _shutil
+import time as _time
+from collections import namedtuple
+
+_Usage = namedtuple("_Usage", "total used free")
+DAY = 86400
+
+
+def _touch(path, text="x", mtime=None):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+
+
+class StorageKeeperTests(unittest.TestCase):
+    def setUp(self):
+        from autopi.storage_keeper import StorageKeeper
+        self.Keeper = StorageKeeper
+        self.root = tempfile.mkdtemp()
+        # "now" = 15 Nov 2026, local time
+        self.now = _time.mktime((2026, 11, 15, 12, 0, 0, 0, 0, -1))
+        self.free = 10000          # MB the fake card has free
+
+    def tearDown(self):
+        _shutil.rmtree(self.root, ignore_errors=True)
+
+    def keeper(self, **cfg):
+        usage = lambda path: _Usage(0, 0, self.free * 1024 * 1024)
+        return self.Keeper(cfg, root=self.root, clock=lambda: self.now,
+                           disk_usage=usage)
+
+    def p(self, rel):
+        return os.path.join(self.root, rel)
+
+    def test_last_months_log_is_archived_and_this_months_is_not(self):
+        oct_t = _time.mktime((2026, 10, 20, 9, 0, 0, 0, 0, -1))
+        _touch(self.p("data/driving_log_v2.csv"), "h\n1\n", oct_t)
+        _touch(self.p("data/warning_log.csv"), "h\n", self.now - 60)
+        s = self.keeper().run()
+        self.assertTrue(os.path.exists(self.p("data/archive/driving_log_v2_2026-10.csv")))
+        self.assertFalse(os.path.exists(self.p("data/driving_log_v2.csv")))
+        self.assertTrue(os.path.exists(self.p("data/warning_log.csv")))
+        self.assertEqual(len(s["rolled"]), 1)
+
+    def test_legacy_log_goes_to_archive(self):
+        _touch(self.p("data/driving_log.csv"), "old", self.now - 30 * DAY)
+        self.keeper().run()
+        self.assertFalse(os.path.exists(self.p("data/driving_log.csv")))
+        self.assertEqual(len(os.listdir(self.p("data/archive"))), 1)
+
+    def test_archives_older_than_keep_days_are_deleted(self):
+        _touch(self.p("data/archive/driving_log_v2_2026-06.csv"), "a", self.now - 150 * DAY)
+        _touch(self.p("data/archive/driving_log_v2_2026-10.csv"), "b", self.now - 20 * DAY)
+        s = self.keeper(keep_days=90).run()
+        self.assertFalse(os.path.exists(self.p("data/archive/driving_log_v2_2026-06.csv")))
+        self.assertTrue(os.path.exists(self.p("data/archive/driving_log_v2_2026-10.csv")))
+        self.assertEqual(len(s["deleted"]), 1)
+
+    def test_size_cap_removes_oldest_first(self):
+        big = "x" * (600 * 1024)
+        _touch(self.p("data/archive/a.csv"), big, self.now - 30 * DAY)
+        _touch(self.p("data/archive/b.csv"), big, self.now - 20 * DAY)
+        _touch(self.p("data/archive/c.csv"), big, self.now - 10 * DAY)
+        self.keeper(max_archive_mb=1).run()
+        left = sorted(os.listdir(self.p("data/archive")))
+        self.assertEqual(left, ["c.csv"])
+
+    def test_only_newest_reports_kept_and_latest_html_never_deleted(self):
+        for i in range(5):
+            t = self.now - (10 - i) * DAY
+            _touch(self.p("reports/autopi_report_%d.html" % i), "h", t)
+            _touch(self.p("reports/autopi_report_%d.txt" % i), "t", t)
+        _touch(self.p("reports/latest.html"), "l", self.now - 100 * DAY)
+        self.keeper(keep_reports=2).run()
+        left = sorted(os.listdir(self.p("reports")))
+        self.assertEqual(left, ["autopi_report_3.html", "autopi_report_3.txt",
+                                "autopi_report_4.html", "autopi_report_4.txt",
+                                "latest.html"])
+
+    def test_big_text_log_rotates_to_dot_one(self):
+        _touch(self.p("logs/boot.log"), "x" * 3000)
+        _touch(self.p("logs/boot.log.1"), "older")
+        self.keeper(max_text_log_kb=1).run()
+        self.assertFalse(os.path.exists(self.p("logs/boot.log")))
+        with open(self.p("logs/boot.log.1")) as f:
+            self.assertEqual(len(f.read()), 3000)
+
+    def test_low_space_deletes_archives_then_reports_low(self):
+        _touch(self.p("data/archive/a.csv"), "a", self.now - 5 * DAY)
+        self.free = 100
+        k = self.keeper(min_free_mb=500)
+        s = k.run()
+        self.assertFalse(os.path.exists(self.p("data/archive/a.csv")))
+        self.assertTrue(s["low_space"])
+        self.assertIn("nearly full", k.describe(s))
+
+    def test_never_touches_model_config_or_module_cache(self):
+        old = self.now - 400 * DAY
+        _touch(self.p("config.json"), "{}", old)
+        _touch(self.p("models/anomaly_model.joblib"), "m", old)
+        _touch(self.p("data/modules.json"), "[]", old)
+        # even if someone points the archive at a protected folder
+        k = self.keeper(archive_dir="models", keep_days=1, max_archive_mb=0)
+        s = k.run()
+        self.assertTrue(os.path.exists(self.p("models/anomaly_model.joblib")))
+        self.assertTrue(os.path.exists(self.p("config.json")))
+        self.assertTrue(os.path.exists(self.p("data/modules.json")))
+        self.assertTrue(any("refused" in n for n in s["notes"]))
+
+    def test_describe_is_short_and_plain(self):
+        k = self.keeper()
+        line = k.describe(k.run())
+        self.assertIn("MB free", line)
+        self.assertLess(len(line), 60)
+
+
+class BatchedDataLoggerTests(unittest.TestCase):
+    def setUp(self):
+        from autopi.data_logger import DataLogger
+        self.DataLogger = DataLogger
+        self.root = tempfile.mkdtemp()
+        self.path = os.path.join(self.root, "data", "driving_log_v2.csv")
+        self.clock = Clock()
+        self.free = 10000
+
+    def tearDown(self):
+        _shutil.rmtree(self.root, ignore_errors=True)
+
+    def make(self, **kw):
+        usage = lambda path: _Usage(0, 0, self.free * 1024 * 1024)
+        return self.DataLogger(self.path, clock=self.clock, disk_usage=usage, **kw)
+
+    def rows(self):
+        with open(self.path) as f:
+            return f.read().strip().splitlines()
+
+    def test_rows_wait_in_memory_until_a_batch_is_due(self):
+        log = self.make(flush_s=60, flush_rows=50)
+        for _ in range(10):
+            log.log({"rpm": 800, "speed": 0})
+        self.assertEqual(len(self.rows()), 1)          # header only
+        self.assertEqual(log.pending(), 10)
+        self.clock.t = 61
+        log.log({"rpm": 800})
+        self.assertEqual(len(self.rows()), 12)         # header + 11 in one write
+        self.assertEqual(log.writes, 1)
+
+    def test_row_count_triggers_a_batch(self):
+        log = self.make(flush_s=999, flush_rows=5)
+        for _ in range(5):
+            log.log({"rpm": 900})
+        self.assertEqual(len(self.rows()), 6)
+
+    def test_engine_off_saves_the_batch_right_away(self):
+        log = self.make(flush_s=999, flush_rows=999)
+        for _ in range(3):
+            log.log({"rpm": 900})
+        log.log({"rpm": 0})                            # key turning off
+        self.assertEqual(len(self.rows()), 4)
+        self.assertEqual(log.pending(), 0)
+
+    def test_new_file_with_header_after_monthly_archive(self):
+        log = self.make(flush_s=999, flush_rows=1)
+        log.log({"rpm": 900})
+        os.replace(self.path, self.path + ".old")      # what the keeper does
+        log.log({"rpm": 950})
+        rows = self.rows()
+        self.assertTrue(rows[0].startswith("timestamp,"))
+        self.assertEqual(len(rows), 2)
+
+    def test_card_nearly_full_pauses_logging(self):
+        log = self.make(flush_s=999, flush_rows=1, min_free_mb=500)
+        self.free = 100
+        log.log({"rpm": 900})
+        self.assertTrue(log.paused)
+        self.assertEqual(len(self.rows()), 1)
+        self.free = 5000
+        log.log({"rpm": 900})
+        self.assertFalse(log.paused)
+        self.assertEqual(len(self.rows()), 2)
+
+
+class MultiFileTrainingTests(unittest.TestCase):
+    def test_folder_and_files_merge_oldest_first(self):
+        try:
+            import pandas  # noqa: F401  (training needs pandas; Pi app does not)
+        except ImportError:
+            self.skipTest("pandas not installed")
+        from autopi.build_features import expand_paths, load_raw
+        root = tempfile.mkdtemp()
+        try:
+            _touch(os.path.join(root, "archive", "driving_log_v2_2026-10.csv"),
+                   "timestamp,rpm\n2026-10-01 10:00:00,800\n")
+            _touch(os.path.join(root, "archive", "warning_log_2026-10.csv"),
+                   "timestamp,warning\n2026-10-01 10:00:00,x\n")
+            live = os.path.join(root, "driving_log_v2.csv")
+            _touch(live, "timestamp,rpm\n2026-11-01 10:00:00,900\n")
+            paths = expand_paths([live, os.path.join(root, "archive")])
+            self.assertEqual(len(paths), 2)            # warning log not included
+            raw = load_raw([live, os.path.join(root, "archive")])
+            self.assertEqual(list(raw["rpm"]), [800, 900])
+        finally:
+            _shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

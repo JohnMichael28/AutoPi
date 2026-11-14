@@ -15,6 +15,7 @@ from autopi.face_state import FaceState
 from autopi.bar_gauge import BarGauge
 from autopi.snapshot_thread import SnapshotThread
 from autopi.data_logger import DataLogger
+from autopi.storage_keeper import StorageKeeper
 from autopi.warning_advisor import WarningAdvisor
 from autopi.warning_log import WarningLog
 from autopi.anomaly_feed import AnomalyFeed
@@ -73,7 +74,18 @@ class UI:
         self._vehicle = vehicle
         self._ai_client = ai_client
         self._report_view = report_view
-        self._data_logger = DataLogger()      # starts the ML data collection
+        # SD-card care: old logs/reports are cleaned up by the storage
+        # keeper at boot; the ML logger writes in batches (config "storage").
+        try:
+            with open("config.json") as stf:
+                self._storage_cfg = json.load(stf).get("storage", {})
+        except Exception:
+            self._storage_cfg = {}
+        self._storage = StorageKeeper(self._storage_cfg)
+        self._data_logger = DataLogger(        # starts the ML data collection
+            flush_s=self._storage_cfg.get("log_flush_s", 60),
+            flush_rows=self._storage_cfg.get("log_flush_rows", 50),
+            min_free_mb=self._storage_cfg.get("min_free_mb", 500))
         # ML advisory (soft signal, not alarm). Voltage is ignored: this car's
         # module voltage reads low even when healthy (config "anomaly").
         try:
@@ -260,6 +272,7 @@ class UI:
     # ---- start-up steps (each returns (state, detail)) --------------------
     def _boot_steps(self):
         return [
+            ("SD CARD CLEANUP", self._boot_storage),
             ("GUARDIAN FACE + SCREENS", self._boot_screens),
             ("OBD-II LINK", self._boot_obd),
             ("LIVE DATA FAST LANE", self._boot_fast_lane),
@@ -274,6 +287,14 @@ class UI:
             ("ALL-MODULE ACCESS (UDS)", self._boot_modules),
             ("PI AI MODEL (LOCAL ONLY)", self._boot_local_ai),
         ]
+
+    def _boot_storage(self):
+        summary = self._storage.run()
+        if summary.get("low_space"):
+            return "fail", self._storage.describe(summary)
+        if summary.get("notes"):
+            return "warn", summary["notes"][0][:40]
+        return "ok", self._storage.describe(summary)
 
     def _boot_screens(self):
         return "ok", str(len(MOODS)) + " moods, " + str(len(self.graph_pages.pages) + 1) + " graph pages"
@@ -2296,6 +2317,7 @@ def run_ui(data_provider, vehicle=None, ai_client=None, report_view=None,
     if hasattr(ui.data, "_dyno"):
         ui.data._dyno.stop()
     ui._snapshotter.stop()
+    ui._data_logger.flush()              # save the last batch of driving data
     
     if touch is not None:
         touch.close()
