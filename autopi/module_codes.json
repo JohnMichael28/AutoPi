@@ -1,5 +1,5 @@
 {
-  "_about": "Plain-English meanings for module codes AutoPi can show offline. U-codes are SAE J2012 standard; the B2A/B22 Subaru telematics (DCM) entries are as reported in Subaru repair guides - the AI and your mechanic should confirm.",
+  "_about": "Plain-English meanings for module codes AutoPi can show offline. U-codes are SAE J2012 standard; the B2A/B22 Subaru telematics (DCM) entries are as reported in Subaru repair guides - the AI and your mechanic should confirm. B2806 per Subaru-specific repair guides (go-parts.com).",
   "U0001": "High-speed CAN network fault (modules can't talk on the main bus).",
   "U0100": "Lost communication with the engine computer (ECM). On 2020+ Outbacks often a weak battery.",
   "U0101": "Lost communication with the transmission computer (TCM).",
@@ -16,5 +16,7 @@
   "B2A0C": "Telematics (DCM): internal fault in the module.",
   "B2A16": "Telematics (DCM): immobilizer key-check failed - often after a low-voltage event.",
   "B2A20": "Telematics (DCM): communication fault.",
-  "B2256": "Telematics (DCM): can't talk to the infotainment display unit."
+  "B2256": "Telematics (DCM): can't talk to the infotainment display unit.",
+  "B2806": "EyeSight: 'ECM abnormal' - EyeSight stopped trusting the engine computer's data. Often a follow-on code after a low-voltage/battery event or another module fault; fix the root cause, then re-check.",
+  "B2C22": "EyeSight system communication fault (Subaru bulletin 06-84-22 lists B2C22 as 'EyeSight System'; on some models it's fixed by a VDC software update at the dealer)."
 }

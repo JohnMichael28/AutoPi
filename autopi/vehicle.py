@@ -69,6 +69,39 @@ class Event:
         self.description = description
         self.explanation = explanation
         self.outcome = outcome
+def parse_isotp_lines(lines):
+    """ELM327 CAN lines with headers ("7E8 03 7F 19 78", or no spaces) ->
+    [(can_id, payload bytes)] using ISO-TP single/first/consecutive frames.
+    Every complete message is kept, in order."""
+    out = []
+    pending = {}                       # can_id -> [expected_len, bytearray]
+    for raw in lines:
+        hexs = "".join(raw.split()).upper()
+        if len(hexs) < 5 or any(c not in "0123456789ABCDEF" for c in hexs):
+            continue                   # NO DATA, CAN ERROR, ?, STOPPED...
+        try:
+            can_id = int(hexs[:3], 16)
+            data = bytes.fromhex(hexs[3:] if len(hexs[3:]) % 2 == 0 else hexs[3:-1])
+        except ValueError:
+            continue
+        if not data:
+            continue
+        kind = data[0] >> 4
+        if kind == 0:                                  # single frame
+            n = data[0] & 0x0F
+            out.append((can_id, bytes(data[1:1 + n])))
+        elif kind == 1 and len(data) >= 2:             # first frame
+            n = ((data[0] & 0x0F) << 8) | data[1]
+            pending[can_id] = [n, bytearray(data[2:])]
+        elif kind == 2 and can_id in pending:          # consecutive frame
+            pending[can_id][1].extend(data[1:])
+            n, buf = pending[can_id]
+            if len(buf) >= n:
+                out.append((can_id, bytes(buf[:n])))
+                del pending[can_id]
+    return out
+
+
 class Vehicle:
     """Encapsulates the OBD-II connection to the car. The rest of the app
     talks to the car ONLY through this class - the raw obd connection is
@@ -108,6 +141,7 @@ class Vehicle:
         self.__priority_lock = threading.Lock()
         self.__rpm_times = []            # for the measured RPM refresh rate
         self.__last_reading = None
+        self.last_uds_raw = []
     def connect(self):
         # Open the connection. fast=False + a short timeout are the documented
         # fixes for Raspberry Pi/ELM327 query hangs (python-OBD issue #149 and
@@ -181,41 +215,40 @@ class Vehicle:
                 return None
 
     # ---- UDS (all-module access) ------------------------------------------
-    def uds_request(self, header_hex, payload_hex):
+    def uds_request(self, header_hex, payload_hex, timeout_hex="32"):
         """Send one raw UDS request to the module at CAN ID `header_hex`
-        (e.g. "7B0") and return [(reply_id, bytes), ...]. Uses python-OBD's
-        per-command header (AT SH), then python-OBD switches back to the
-        engine header by itself for normal reads. Serialized + priority so
-        live polling waits while modules are being asked."""
+        (e.g. "7B0") and return [(reply_id, bytes), ...] - one entry per
+        complete reply (a "busy, wait" 7F xx 78 and the real answer come
+        back as two entries).
+
+        Raw on purpose: python-OBD's parser throws away a reply that arrives
+        as two single frames from one module (busy-then-answer), which looks
+        exactly like "no reply". So this talks to the adapter directly:
+        AT SH <id>, AT ST <timeout>, the request, then puts the header back
+        to the engine (7E0) so normal live data keeps working.
+        self.last_uds_raw keeps the adapter's raw lines for the screen."""
         if self.__connection is None:
             raise IOError("no connection")
-        try:
-            from obd import OBDCommand
-            from obd.protocols import ECU
-        except Exception as err:
-            raise IOError("python-OBD too old for module access: " + str(err)[:40])
-
-        def decoder(messages):
-            # python-OBD's tx_id is NOT the CAN ID for non-engine modules
-            # (0x7D8 comes back as 0xF1), so read the 11-bit reply ID from
-            # the raw frame text instead ("7D8 07 59 02 ..." -> 0x7D8).
-            out = []
-            for m in messages:
-                rid = None
-                try:
-                    rid = int(m.frames[0].raw.replace(" ", "")[:3], 16)
-                except Exception:
-                    rid = getattr(m, "tx_id", None)
-                out.append((rid, bytes(m.data)))
-            return out
-        cmd = OBDCommand("UDS_" + header_hex + "_" + payload_hex, "UDS request",
-                         payload_hex.encode(), 0, decoder, ECU.ALL, False,
-                         header=header_hex.encode())
+        iface = getattr(self.__connection, "interface", None)
+        send = getattr(iface, "_ELM327__send", None) if iface is not None else None
+        if send is None:
+            raise IOError("adapter raw access not available")
         with self.priority():
             with self.__lock:
-                response = self.__connection.query(cmd, force=True)
-        value = getattr(response, "value", None)
-        return value or []
+                try:
+                    send(b"AT SH " + header_hex.encode())
+                    send(b"AT ST " + timeout_hex.encode())
+                    lines = send(payload_hex.encode()) or []
+                finally:
+                    try:
+                        send(b"AT ST 32")
+                        send(b"AT SH 7E0")       # python-OBD's engine header
+                    except Exception:
+                        pass
+        lines = [ln.decode(errors="ignore") if isinstance(ln, bytes) else str(ln)
+                 for ln in lines]
+        self.last_uds_raw = lines
+        return parse_isotp_lines(lines)
 
     # ---- fast lane --------------------------------------------------------
     def start_fast_lane(self, gap_s=0.005):

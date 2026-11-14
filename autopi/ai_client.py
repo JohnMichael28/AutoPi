@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import time
 
@@ -71,12 +72,27 @@ class AIClient:
         if text.strip().upper().startswith("SECURITY:"):
             g["log"].report("explainer", "model reported suspicious input",
                             text.strip()[:200])
+            return text
+        text = self.tidy(text)
         verdict = g["judge"].check_code(text, prompt + " " + text, "")
         hard = [r for r in verdict.reasons if not r.startswith("number ")]
         if hard:
             g["log"].report("explainer", "answer blocked", "; ".join(hard))
             return "AI unavailable: answer blocked by AutoPi safety check"
         return text
+
+    @staticmethod
+    def tidy(text):
+        """The small Pi model sometimes parrots its own prompt: "<<DATA"
+        fence markers, or a "SECURITY: I cannot claim..." sentence copied
+        from the rules (seen on the real car's sonar screen). Strip those so
+        the driver only reads the explanation."""
+        for marker in ("<<END DATA>>", "<<DATA", "<<", ">>"):
+            text = text.replace(marker, "")
+        parts = re.split(r"(?<=[.!?])\s+", text.strip())
+        keep = [p for p in parts if "SECURITY" not in p.upper()
+                and "AS AN AI" not in p.upper()]
+        return " ".join(keep).strip() or text.strip()
 
     def __init__(self, config=None, model=None,
                  local_url="http://127.0.0.1:8080", local_model="qwen3-0.6b"):

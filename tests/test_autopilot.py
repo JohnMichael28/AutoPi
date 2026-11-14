@@ -396,6 +396,15 @@ class AIClientTests(unittest.TestCase):
         out = c.ask_with_retry("q3", still_wanted=wanted)
         self.assertTrue(out.startswith("AI unavailable"))
 
+    def test_tidy_removes_prompt_parroting(self):
+        from autopi.ai_client import AIClient
+        raw = ("<<DATA B2C22-00 CONFIRMED: EyeSight comms fault. Have the dealer check it. "
+               "SECURITY: I cannot claim I did anything to the car.")
+        out = AIClient.tidy(raw)
+        self.assertNotIn("<<", out)
+        self.assertNotIn("SECURITY", out)
+        self.assertIn("Have the dealer check it.", out)
+
     def test_local_only_never_calls_another_host(self):
         import autopi.ai_client as mod
         c = self.make()
@@ -518,6 +527,7 @@ class ReportTests(unittest.TestCase):
                          warmup_fn=lambda: {"cold": False},
                          module_scan_fn=lambda: [({"req": "7D0"}, {"ok": True, "error": "", "codes": [
                              {"code": "B2A16-00", "status": 9, "status_text": "FAILING NOW, CONFIRMED",
+                              "severity": "fix",
                               "meaning": "Telematics (DCM): immobilizer key-check failed"}]})])
         return DiagnosticReport(None, hc, lambda: snap, readers=readers,
                                 dyno_info_fn=lambda: {"time": "2026-11-13 00:21:52",
@@ -648,11 +658,111 @@ class ModuleScanTests(unittest.TestCase):
         self.assertIn("conditions not correct", results["780"]["error"])
         items = sc.scan_items(sc.scan_all())
         text = "\n".join(t for t, k in items)
-        self.assertIn("4 modules asked, 3 answered, 2 with codes", text)
+        self.assertIn("4 modules asked, 3 answered, 2 with failed codes", text)
         self.assertIn("RAW  B2A16-00  status 0x09 = FAILING NOW, CONFIRMED", text)
         for t, k in items:
             if t.startswith("RAW "):
                 self.assertEqual(k, "raw")
+
+    def test_not_tested_entries_are_not_faults(self):
+        """Real car: the 2.4 turbo module returned 135 entries with status
+        0x40/0x50 ('not tested yet') - those must NOT show as faults."""
+        from autopi.module_scan import ModuleScanner
+        import tempfile
+        body = bytes([0x00, 0x06, 0x2D, 0x40, 0x00, 0x12, 0x61, 0x50,
+                      0x94, 0xA1, 0x00, 0x02])           # last: B14A1 failed this cycle
+
+        def send(req, payload, timeout_hex="32"):
+            if payload == "1902FF":
+                return [(0x7AA, bytes([0x59, 0x02, 0xFF]) + body)]
+            return []
+        sc = ModuleScanner(send, {"cache": os.path.join(tempfile.mkdtemp(), "m.json")})
+        res = sc.read_dtcs({"req": "7A2"})
+        self.assertEqual(res["not_tested"], 2)
+        self.assertEqual([c["code"] for c in res["codes"]], ["B14A1-00"])
+        self.assertEqual(res["codes"][0]["severity"], "watch")
+        self.assertIn("FAILED THIS KEY CYCLE", res["codes"][0]["status_text"])
+
+    def test_broadcast_id_is_not_a_module(self):
+        from autopi.module_scan import ModuleScanner
+        import tempfile
+        asked = []
+
+        def send(req, payload, timeout_hex="32"):
+            asked.append(req)
+            return []
+        sc = ModuleScanner(send, {"cache": os.path.join(tempfile.mkdtemp(), "m.json"),
+                                  "sweep_from": "7D0", "sweep_to": "7EF"})
+        sc.discover(full=True)
+        self.assertNotIn("7DF", asked)
+        self.assertNotIn("7E8", asked)
+        self.assertIn("7E0", asked)
+
+    def test_module_names_are_cleaned(self):
+        from autopi.module_scan import clean_text
+        self.assertEqual(clean_text(b"AIRBAG SYSTEM\x00\xff\xff\x01\x7f"), "AIRBAG SYSTEM")
+
+    def test_isotp_parser_keeps_busy_then_answer(self):
+        from autopi.vehicle import parse_isotp_lines
+        lines = ["7E8 03 7F 19 78", "7E8 07 59 02 FF AA 16 00 09", "NO DATA"]
+        self.assertEqual(parse_isotp_lines(lines),
+                         [(0x7E8, bytes([0x7F, 0x19, 0x78])),
+                          (0x7E8, bytes([0x59, 0x02, 0xFF, 0xAA, 0x16, 0x00, 0x09]))])
+        multi = ["7D8100B5902FFAA1600", "7D82109C1000008"]      # no spaces too
+        self.assertEqual(parse_isotp_lines(multi)[0][1],
+                         bytes([0x59, 0x02, 0xFF, 0xAA, 0x16, 0x00, 0x09, 0xC1, 0x00, 0x00, 0x08]))
+
+    def test_busy_then_answer_is_read(self):
+        from autopi.module_scan import ModuleScanner
+        import tempfile
+
+        def send(req, payload, timeout_hex="32"):
+            if payload == "1902FF":
+                return [(0x7E8, bytes([0x7F, 0x19, 0x78])),
+                        (0x7E8, bytes([0x59, 0x02, 0xFF, 0xC1, 0x00, 0x00, 0x08]))]
+            return []
+        sc = ModuleScanner(send, {"cache": os.path.join(tempfile.mkdtemp(), "m.json")})
+        res = sc.read_dtcs({"req": "7E0"})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["codes"][0]["code"], "U0100-00")
+
+    def test_kwp_fallback_when_uds_not_supported(self):
+        from autopi.module_scan import ModuleScanner
+        import tempfile
+
+        def send(req, payload, timeout_hex="32"):
+            if payload.startswith("19"):
+                return [(0x7E8, bytes([0x7F, 0x19, 0x11]))]
+            if payload == "1800FF00":
+                return [(0x7E8, bytes([0x58, 0x01, 0x01, 0x71, 0x48]))]   # P0171
+            return []
+        sc = ModuleScanner(send, {"cache": os.path.join(tempfile.mkdtemp(), "m.json")})
+        res = sc.read_dtcs({"req": "7E0"})
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["codes"][0]["code"], "P0171")
+        self.assertEqual(len(res["tries"]), 3)
+
+    def test_uds_request_puts_engine_header_back(self):
+        from autopi.vehicle import Vehicle
+        sent = []
+
+        class Iface:
+            def _ELM327__send(self, cmd, delay=None):
+                sent.append(cmd)
+                if cmd == b"1902FF":
+                    return ["7D8 07 59 02 FF AA 16 00 09"]
+                return ["OK"]
+
+        class Conn:
+            interface = Iface()
+
+            def is_connected(self):
+                return True
+        v = Vehicle(port="x")
+        v._Vehicle__connection = Conn()
+        out = v.uds_request("7D0", "1902FF", "64")
+        self.assertEqual(out[0][0], 0x7D8)
+        self.assertEqual(sent, [b"AT SH 7D0", b"AT ST 64", b"1902FF", b"AT ST 32", b"AT SH 7E0"])
 
     def test_clear_one_module(self):
         sc, _ = self.make()

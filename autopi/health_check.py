@@ -264,6 +264,12 @@ class HealthCheck:
                     c["code"] + " (" + c["status_text"] + ")" for c in res["codes"]))
             else:
                 sec.raw.append(self._mod_label(mod) + ": no codes")
+        confirmed = [r for r in bad if any(c.get("severity") == "fix" for c in r[1]["codes"])]
+        if bad and not confirmed:
+            sec.set("watch", "A module logged an intermittent failure (not confirmed): "
+                    + ", ".join(self._mod_label(m) for m, _r in bad) + ".",
+                    ["Re-run ALL-MODULE SCAN after a drive; if it comes back, have it checked."])
+            return sec
         if bad:
             steps = []
             for mod, res in bad:

@@ -102,7 +102,9 @@ class UI:
                     book = json.load(cf)
             except Exception:
                 book = {}
-            self._modules = ModuleScanner(self._vehicle.uds_request, mcfg, book)
+            self._modules = ModuleScanner(
+                self._vehicle.uds_request, mcfg, book,
+                raw_fn=lambda: getattr(self._vehicle, "last_uds_raw", []))
         self._refresh_modules_menu()
         try:
             with open("config.json") as gpf:
@@ -852,11 +854,23 @@ class UI:
             if not result.get("codes") or self._ai_client is None:
                 return
             items.append(("--- AI EXPLANATION ---", "head"))
-            prompt = ("A car module (" + self._modules.label(mod) + ") stored these codes "
-                      "(UDS, code-failuretype + status): "
-                      + "; ".join(c["code"] + " " + c["status_text"] for c in result["codes"])
-                      + ". Explain simply what they mean and what the owner should do. "
-                      "Do not invent details not in the codes.")
+            known = [c for c in result["codes"] if c.get("meaning")]
+            unknown = [c for c in result["codes"] if not c.get("meaning")]
+            for c in unknown:
+                # A 0.6B model does not know Subaru-specific codes and will
+                # make up a meaning - so it is not asked to guess.
+                items.append((c["code"].split("-")[0] + ": not in AutoPi's offline code "
+                              "list. Subaru's dealer tool (Select Monitor) / service manual "
+                              "defines it - save a REPORT for the shop.", "ai"))
+            if not known:
+                self.diag_screen.set_colored(title, items, keep_scroll=True)
+                return
+            prompt = ("The " + self._modules.label(mod).lower() + " module of a car stored "
+                      "these trouble codes. Known meanings: "
+                      + "; ".join(c["code"].split("-")[0] + " = " + c["meaning"]
+                                  + " (" + c["status_text"].lower() + ")" for c in known)
+                      + ". In 2-3 plain sentences, explain what this means for the "
+                      "driver and what to do. Use only the meanings given.")
 
             def status(msg):
                 if self.diag_screen.is_showing(box["token"]):
