@@ -4,15 +4,15 @@ from autopi.offline_ai import OfflineExplainer
 class AIRouter:
     """The tiered-inference router (the AI/ML architecture showpiece).
     Routes a code-explanation request down the ladder:
-      TIER 1: the good AI (laptop Ollama via AIClient) - best quality
-      TIER 3: offline dictionary + queue - always works, no connection
-    (Tier 2, a tiny on-Pi model, is a documented future upgrade.)
+      TIER 1: the on-Pi model (AIClient -> local llama-server), no network
+      TIER 2: offline dictionary + queue - always works, even if the model
+              service is down
 
     This is 'graceful degradation': the device ALWAYS gives an answer,
     using the best tier currently available."""
 
     def __init__(self, ai_client, offline=None):
-        self._ai = ai_client          # Tier 1 (Ollama)
+        self._ai = ai_client          # Tier 1 (on-Pi model)
         self._offline = offline or OfflineExplainer()
 
     def explain_code(self, code):

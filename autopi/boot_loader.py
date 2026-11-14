@@ -33,11 +33,6 @@ BG = (6, 12, 7)
 TAGS = {"ok": ("[ OK ]", GREEN), "warn": ("[WARN]", YELLOW),
         "fail": ("[FAIL]", RED)}
 
-MINI_FACE = ["                ", "                ", "   XX      XX   ",
-             "   XX      XX   ", "   XX      XX   ", "                ",
-             "                ", "  X        X    ", "   X      X     ",
-             "    XXXXXX      ", "                ", "                "]
-
 
 class BootLoader:
     def __init__(self, width, height, steps, title="AUTOPI GUARDIAN TERMINAL",
@@ -116,7 +111,6 @@ class BootLoader:
         surface.blit(title, (30, 22))
         ver = self.font_small.render(self.version + "  //  OBD-II + AI GUARDIAN", True, DIM)
         surface.blit(ver, (32, 58))
-        self._draw_face(surface, frame)
         pygame.draw.line(surface, DIM, (30, 80), (self.width - 30, 80), 2)
 
         total = len(self._rows)
@@ -156,18 +150,6 @@ class BootLoader:
         surface.blit(f, (self.width // 2 - f.get_width() // 2, self.height - 30))
         for sy in range(0, self.height, 3):
             pygame.draw.line(surface, (0, 16, 0), (0, sy), (self.width, sy), 1)
-
-    def _draw_face(self, surface, frame):
-        cell = 4
-        ox = self.width - 30 - 16 * cell
-        oy = 14
-        blink = (frame // 90) % 8 == 0
-        for r, line in enumerate(MINI_FACE):
-            if blink and 2 <= r <= 4:
-                continue
-            for c, ch in enumerate(line):
-                if ch == "X":
-                    pygame.draw.rect(surface, GREEN, (ox + c * cell, oy + r * cell, cell - 1, cell - 1))
 
     def _draw_progress(self, surface, y):
         total = max(1, len(self._rows))

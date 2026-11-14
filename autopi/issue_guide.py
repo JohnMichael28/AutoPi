@@ -1,5 +1,6 @@
-"""IssueGuide: when a warning or ML anomaly KEEPS happening, the guardian
-speaks up, says what it is and which graph shows it, then opens that graph.
+"""IssueGuide: when a warning or ML anomaly KEEPS happening, a pop-up banner
+says what it is and which graph shows it. It never switches the screen by
+itself - tap the banner to open that graph, or ignore it.
 
 Pure logic (no pygame), so it is unit-testable with a fake clock:
     event = guide.update(active_warnings, ml_result)
@@ -71,9 +72,10 @@ class IssueGuide:
             self._last_fired[key] = now
             say = title.rstrip(".") + "."
             if page:
-                say += " Look at the " + page + " graph - I'm opening it now."
+                say += " Look at the " + page + " graph."
             if step:
                 say += " First: " + step
-            return {"key": key, "title": "LOOK HERE: " + (page or "WARNINGS"),
-                    "say": say, "page": page}
+            return {"key": key, "title": "LOOK AT: " + (page or "WARNINGS")
+                    + (" GRAPH" if page else ""),
+                    "say": say, "page": page, "issue": title, "step": step}
         return None

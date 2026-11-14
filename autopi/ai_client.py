@@ -3,21 +3,18 @@ import threading
 import time
 
 import requests
-from autopi.discovery import OllamaFinder
 
 
 class AIClient:
-    """The AI 'brain' for AutoPi, with a local-first tiered fallback so the
-    device always has an answer - even off-grid in the car.
+    """The AI 'brain' for AutoPi. LOCAL ONLY (Nov 2026): it runs entirely on
+    this Pi and never waits on a laptop or any network.
 
-    TIER 1 - LOCAL SLM (llama-server on this Pi, OpenAI /v1 API): tried FIRST,
-             always available, needs no network. A small quantized model
-             (Qwen3-0.6B) kept on a tight leash by the system prompt below.
-    TIER 2 - HOME OLLAMA (the bigger model on the home box, Ollama /api API):
-             only used if the local server is down. Smarter, but only reachable
-             on home WiFi.
-    TIER 3 - the caller's own offline handling (e.g. OfflineExplainer) if both
-             fail; ask() returns an 'AI unavailable' string it can fall back on.
+    MODEL   - llama-server on this Pi (OpenAI /v1 API, 127.0.0.1:8080): a small
+              quantized model (Qwen3-0.6B) kept on a tight leash by the system
+              prompt below.
+    FLOOR   - if the Pi model is down, ask() returns an 'AI unavailable' string
+              right away (connection refused is instant) and callers show their
+              own offline text (OfflineExplainer, playbook steps).
 
     The model is weak, so RELIABILITY COMES FROM THE HARNESS, not the model:
     a fixed car-diagnostic system prompt, live data supplied by the caller in
@@ -81,14 +78,11 @@ class AIClient:
             return "AI unavailable: answer blocked by AutoPi safety check"
         return text
 
-    def __init__(self, config, model="llama3.2",
+    def __init__(self, config=None, model=None,
                  local_url="http://127.0.0.1:8080", local_model="qwen3-0.6b"):
-        # config: a Config object (we ask it for the ollama_ip)
-        self.__config = config
-        self.__ip = config.ollama_ip          # home Ollama (tier 2)
-        self.__model = model                  # home Ollama model name
-        self.__finder = OllamaFinder()
-        self.__local_url = local_url.rstrip("/")   # local llama-server (tier 1)
+        # config / model are accepted for old callers and ignored: there is
+        # no home/laptop tier anymore.
+        self.__local_url = local_url.rstrip("/")   # local llama-server
         self.__local_model = local_model
         # Timing + retry settings: config.json "ai" (defaults below).
         try:
@@ -101,15 +95,7 @@ class AIClient:
         # rules were added - answers were cut off right before they finished.
         self.__local_timeout = acfg.get("local_timeout_s", 45)
         self.__local_max_tokens = acfg.get("local_max_tokens", 90)
-        self.__home_timeout = acfg.get("home_timeout_s", 30)
-        # Connect timeout: an unreachable laptop fails in 2 s, not 30 s.
         self.__connect_timeout = acfg.get("connect_timeout_s", 2)
-        # After the home box fails (e.g. you're driving), skip it for a while
-        # instead of waiting on it - and re-scanning the network - every ask.
-        self.__home_skip_s = acfg.get("home_skip_s", 120)
-        self.__home_down_until = 0.0
-        self.__last_scan = 0.0
-        self.__scan_every_s = acfg.get("rescan_every_s", 300)
         # Same question within cache_ttl_s = instant answer, no model call.
         self.__cache_ttl = acfg.get("cache_ttl_s", 600)
         self.__cache = {}
@@ -151,47 +137,8 @@ class AIClient:
             text = text.split("</think>")[-1]
         return text.strip()
 
-    # ---- TIER 2: home Ollama (/api/generate) ------------------------------
-    def __url(self):
-        return "http://" + self.__ip + ":11434/api/generate"
-
-    def __rediscover(self):
-        found = self.__finder.find()
-        if found is not None:
-            self.__ip = found
-            print("Auto-discovered Ollama at", found)
-            return True
-        return False
-
-    def __ask_home(self, prompt):
-        now = time.monotonic()
-        if now < self.__home_down_until:
-            raise RuntimeError("home AI not reachable (skipping for now)")
-        data = {"model": self.__model,
-                "prompt": self._guards()["system"] + "\n\n" + prompt,
-                "stream": False}
-        timeout = (self.__connect_timeout, self.__home_timeout)
-        try:
-            response = requests.post(self.__url(), json=data, timeout=timeout)
-            return response.json()["response"]
-        except Exception:
-            # Re-scan the subnet at most every few minutes, not every ask.
-            if now - self.__last_scan >= self.__scan_every_s:
-                self.__last_scan = now
-                if self.__rediscover():
-                    try:
-                        response = requests.post(self.__url(), json=data, timeout=timeout)
-                        return response.json()["response"]
-                    except Exception:
-                        pass
-            self.__home_down_until = time.monotonic() + self.__home_skip_s
-            raise
-
-    # ---- Public API (unchanged signature - callers don't change) ----------
     def ask(self, prompt):
-        # Send any prompt to the AI, return the text response. LOCAL FIRST so
-        # the device answers instantly, offline, without waiting on the network.
-        # Falls back to home Ollama only if the local server is down.
+        # Send any prompt to the on-Pi model, return the text response.
         # Cached answers return instantly; identical questions share one call.
         now = time.monotonic()
         hit = self.__cache.get(prompt)
@@ -206,7 +153,7 @@ class AIClient:
             else:
                 owner = False
         if not owner:
-            waiter["event"].wait(self.__local_timeout + self.__home_timeout + 10)
+            waiter["event"].wait(self.__local_timeout + 10)
             return waiter["answer"] or "AI unavailable: timed out waiting"
         try:
             with self.__model_lock:
@@ -223,10 +170,11 @@ class AIClient:
     def __ask_tiers(self, prompt):
         try:
             return self._screen(prompt, self.__ask_local(prompt))
-        except Exception:
-            pass
-        try:
-            return self._screen(prompt, self.__ask_home(prompt))
+        except requests.exceptions.ConnectionError:
+            return ("AI unavailable: the Pi AI model is not running "
+                    "(sudo systemctl restart llama-server)")
+        except requests.exceptions.Timeout:
+            return "AI unavailable: the Pi AI model is busy (timed out)"
         except Exception as e:
             return "AI unavailable: " + str(e)[:120]
 
@@ -256,8 +204,8 @@ class AIClient:
                 if still_wanted is not None and not still_wanted():
                     return answer
                 if on_status is not None:
-                    on_status("AI busy or unreachable - trying again in "
-                              + str(left) + " s")
+                    reason = answer.replace("AI unavailable: ", "")
+                    on_status(reason + " - trying again in " + str(left) + " s")
                 time.sleep(1)
 
     def explain_code(self, code):
@@ -271,28 +219,8 @@ class AIClient:
         return self.ask(prompt)
 
     def is_reachable(self):
-        # Fast check used at boot. TRUE if EITHER brain answers. Checks the
-        # local server first (it's the primary now), then the home box.
-        try:
-            r = requests.get(self.__local_url + "/health", timeout=2)
-            if r.status_code == 200:
-                return True
-        except Exception:
-            pass
-        try:
-            r = requests.get("http://" + self.__ip + ":11434/api/tags", timeout=2)
-            return r.status_code == 200
-        except Exception:
-            return False
-
-    def home_reachable(self):
-        """(True/False, ip) - is the laptop Ollama answering right now?"""
-        try:
-            r = requests.get("http://" + self.__ip + ":11434/api/tags",
-                             timeout=self.__connect_timeout)
-            return r.status_code == 200, self.__ip
-        except Exception:
-            return False, self.__ip
+        # Local only: is the on-Pi model answering?
+        return self.local_reachable()
 
     def local_reachable(self):
         # Specifically: is the on-Pi SLM up? (For boot status / diagnostics.)

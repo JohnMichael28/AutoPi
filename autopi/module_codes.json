@@ -1,0 +1,20 @@
+{
+  "_about": "Plain-English meanings for module codes AutoPi can show offline. U-codes are SAE J2012 standard; the B2A/B22 Subaru telematics (DCM) entries are as reported in Subaru repair guides - the AI and your mechanic should confirm.",
+  "U0001": "High-speed CAN network fault (modules can't talk on the main bus).",
+  "U0100": "Lost communication with the engine computer (ECM). On 2020+ Outbacks often a weak battery.",
+  "U0101": "Lost communication with the transmission computer (TCM).",
+  "U0121": "Lost communication with the ABS module.",
+  "U0122": "Lost communication with the stability-control (VDC) module.",
+  "U0140": "Lost communication with the body control module.",
+  "U0151": "Lost communication with the airbag (SRS) module.",
+  "U0155": "Lost communication with the instrument cluster.",
+  "U0164": "Lost communication with the climate control (HVAC) module.",
+  "U0184": "Lost communication with the radio / infotainment.",
+  "U0198": "Lost communication with the telematics module (Starlink DCM).",
+  "U0401": "Invalid data received from the engine computer.",
+  "B2A00": "Telematics (DCM): problem reading the VIN.",
+  "B2A0C": "Telematics (DCM): internal fault in the module.",
+  "B2A16": "Telematics (DCM): immobilizer key-check failed - often after a low-voltage event.",
+  "B2A20": "Telematics (DCM): communication fault.",
+  "B2256": "Telematics (DCM): can't talk to the infotainment display unit."
+}

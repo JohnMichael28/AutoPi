@@ -167,7 +167,8 @@ class HealthCheckTests(unittest.TestCase):
             FakeVehicle(codes), readers, lambda: snap, ActionPlaybook(),
             anomaly_status_fn=lambda: {"loaded": ml_loaded, "reason": "model file not found: x"},
             anomaly_result_fn=lambda: (ml or {"severity": "ok"}),
-            warmup_fn=lambda: {"cold": False, "phase": "warm"})
+            warmup_fn=lambda: {"cold": False, "phase": "warm"},
+            module_scan_fn=lambda: [({"req": "7E0"}, {"ok": True, "error": "", "codes": []})])
 
     def test_clean_car_passes(self):
         hc = self.make([], {"rpm": 750, "coolant_temp": 92, "stft_b1": 1.5,
@@ -183,10 +184,11 @@ class HealthCheckTests(unittest.TestCase):
                        ml_loaded=False)
         items = hc.render(hc.run())
         heads = [t for t, k in items if k == "head"]
-        # result header + 8 numbered sections, always in the same order
-        self.assertEqual(len(heads), 9)
+        # result header + 9 numbered sections, always in the same order
+        self.assertEqual(len(heads), 10)
         self.assertTrue(heads[1].startswith("--- 1. STORED CODES"))
         self.assertTrue(heads[8].startswith("--- 8. ML ANOMALY MONITOR"))
+        self.assertTrue(heads[9].startswith("--- 9. ALL MODULES"))
         # every RAW line is green (raw), every meaning/step is yellow (ai)
         for text, kind in items:
             if text.startswith("RAW "):
@@ -394,24 +396,24 @@ class AIClientTests(unittest.TestCase):
         out = c.ask_with_retry("q3", still_wanted=wanted)
         self.assertTrue(out.startswith("AI unavailable"))
 
-    def test_unreachable_home_is_skipped_after_first_failure(self):
+    def test_local_only_never_calls_another_host(self):
         import autopi.ai_client as mod
         c = self.make()
-        posts = []
+        urls = []
 
         def fake_post(url, **kw):
-            posts.append(url)
-            raise mod.requests.exceptions.ConnectionError("no route")
+            urls.append(url)
+            raise mod.requests.exceptions.ConnectionError("refused")
         old = mod.requests.post
         mod.requests.post = fake_post
-        c._AIClient__finder.find = lambda: None
         try:
-            self.assertTrue(c.ask("a").startswith("AI unavailable"))
-            first = len(posts)
-            self.assertTrue(c.ask("b").startswith("AI unavailable"))
+            ans = c.ask("hello")
         finally:
             mod.requests.post = old
-        self.assertEqual(len(posts) - first, 1)   # only the local try; home skipped
+        self.assertTrue(ans.startswith("AI unavailable"))
+        self.assertIn("not running", ans)
+        self.assertEqual(len(urls), 1)
+        self.assertTrue(urls[0].startswith("http://127.0.0.1:8080/"))
 
 
 class SnapshotLogCadenceTests(unittest.TestCase):
@@ -513,7 +515,10 @@ class ReportTests(unittest.TestCase):
         hc = HealthCheck(FakeVehicle(codes), readers, lambda: snap, ActionPlaybook(),
                          anomaly_status_fn=lambda: {"loaded": True, "reason": "loaded"},
                          anomaly_result_fn=lambda: {"severity": "ok"},
-                         warmup_fn=lambda: {"cold": False})
+                         warmup_fn=lambda: {"cold": False},
+                         module_scan_fn=lambda: [({"req": "7D0"}, {"ok": True, "error": "", "codes": [
+                             {"code": "B2A16-00", "status": 9, "status_text": "FAILING NOW, CONFIRMED",
+                              "meaning": "Telematics (DCM): immobilizer key-check failed"}]})])
         return DiagnosticReport(None, hc, lambda: snap, readers=readers,
                                 dyno_info_fn=lambda: {"time": "2026-11-13 00:21:52",
                                                       "peak_hp": 231, "peak_rpm": 5600})
@@ -580,6 +585,81 @@ class BootLoaderTests(unittest.TestCase):
             _t.sleep(0.02)
         states = [r[1] for r in b.results()]
         self.assertEqual(states, ["ok", "warn", "fail"])
+
+
+class ModuleScanTests(unittest.TestCase):
+    """Fake CAN network: engine (no codes), ABS (one C code), a telematics
+    DCM (B2A16 failing now) and an airbag module that refuses to read."""
+
+    def fake_send(self, req, payload):
+        nets = {"7E0", "7B0", "7D0", "780"}
+        if req not in nets:
+            return []
+        rid = int(req, 16) + 8
+        if payload == "3E00":
+            return [(rid, bytes([0x7E, 0x00]))]
+        if payload == "22F197":
+            name = {"7D0": b"TELEMATICS DCM"}.get(req)
+            return [(rid, bytes([0x62, 0xF1, 0x97]) + name)] if name else [(rid, bytes([0x7F, 0x22, 0x31]))]
+        if payload.startswith("22"):
+            return [(rid, bytes([0x7F, 0x22, 0x31]))]
+        if payload == "1902FF":
+            if req == "780":
+                return [(rid, bytes([0x7F, 0x19, 0x22]))]
+            body = {"7E0": b"", "7B0": bytes([0x40, 0x31, 0x00, 0x08]),
+                    "7D0": bytes([0xAA, 0x16, 0x00, 0x09])}[req]
+            return [(rid, bytes([0x59, 0x02, 0xFF]) + body)]
+        if payload == "14FFFFFF":
+            return [(rid, bytes([0x54]))]
+        return []
+
+    def make(self):
+        import tempfile
+        from autopi.module_scan import ModuleScanner
+        book = {"B2A16": "Telematics (DCM): immobilizer key-check failed."}
+        cache = os.path.join(tempfile.mkdtemp(), "modules.json")
+        return ModuleScanner(self.fake_send, {"cache": cache}, book), cache
+
+    def test_decode(self):
+        from autopi.module_scan import decode_dtc, decode_status
+        self.assertEqual(decode_dtc(0xAA, 0x16, 0x00), "B2A16-00")
+        self.assertEqual(decode_dtc(0x40, 0x31, 0x00), "C0031-00")
+        self.assertEqual(decode_dtc(0xC1, 0x00, 0x00), "U0100-00")
+        self.assertEqual(decode_status(0x09), "FAILING NOW, CONFIRMED")
+
+    def test_discover_names_and_saves(self):
+        from autopi.module_scan import ModuleScanner
+        sc, cache = self.make()
+        found = sc.discover(full=False)
+        self.assertEqual(sorted(m["req"] for m in found), ["780", "7B0", "7D0", "7E0"])
+        dcm = [m for m in sc.modules if m["req"] == "7D0"][0]
+        self.assertEqual(dcm["name"], "TELEMATICS DCM")
+        again = ModuleScanner(self.fake_send, {"cache": cache})
+        self.assertIn("7D0", [m["req"] for m in again.modules])     # remembered
+
+    def test_scan_finds_the_dcm_fault_the_engine_scan_missed(self):
+        sc, _ = self.make()
+        sc.discover()
+        results = dict((m["req"], r) for m, r in sc.scan_all())
+        self.assertEqual(results["7E0"]["codes"], [])
+        self.assertEqual(results["7D0"]["codes"][0]["code"], "B2A16-00")
+        self.assertIn("immobilizer", results["7D0"]["codes"][0]["meaning"])
+        self.assertFalse(results["780"]["ok"])
+        self.assertIn("conditions not correct", results["780"]["error"])
+        items = sc.scan_items(sc.scan_all())
+        text = "\n".join(t for t, k in items)
+        self.assertIn("4 modules asked, 3 answered, 2 with codes", text)
+        self.assertIn("RAW  B2A16-00  status 0x09 = FAILING NOW, CONFIRMED", text)
+        for t, k in items:
+            if t.startswith("RAW "):
+                self.assertEqual(k, "raw")
+
+    def test_clear_one_module(self):
+        sc, _ = self.make()
+        ok, err = sc.clear_dtcs({"req": "7D0"})
+        self.assertTrue(ok)
+        ok, err = sc.clear_dtcs({"req": "7A0"})
+        self.assertFalse(ok)
 
 
 class AnomalyStatusTests(unittest.TestCase):

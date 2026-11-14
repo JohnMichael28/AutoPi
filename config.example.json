@@ -5,7 +5,6 @@
   "voltage_warn": 12.2,
   "log_every": 5,
   "dyno_calibration": 1.0,
-  "ollama_ip": "YOUR_OLLAMA_LAPTOP_IP_HERE",
   "touch": {
     "device": "/dev/input/event3",
     "quit_corner": "top_left",
@@ -90,19 +89,13 @@
     "security_log": "logs/security.jsonl",
     "tiers": [
       {
-        "name": "laptop",
-        "base_url": "http://YOUR-LAPTOP-IP:11434",
-        "model": "llama3.2",
-        "timeout_s": 30
-      },
-      {
         "name": "pi",
         "base_url": "http://127.0.0.1:8080",
         "model": "qwen3-0.6b",
-        "timeout_s": 25
+        "timeout_s": 45
       }
     ],
-    "retry_after_s": 60,
+    "retry_after_s": 5,
     "profiles": {
       "driving": {
         "allow": [
@@ -118,14 +111,15 @@
     },
     "max_turns": 5,
     "max_tool_calls": 3,
-    "deadline_s": 45,
+    "deadline_s": 75,
     "max_answer_chars": 600,
     "judge": {
-      "llm_enabled": true,
+      "llm_enabled": false,
       "llm_tiers": [
-        "laptop"
+        "pi"
       ]
-    }
+    },
+    "route_first": true
   },
   "warmup": {
     "running_rpm": 400,
@@ -159,7 +153,8 @@
     "cooldown_s": 300,
     "ml_levels": [
       "elevated"
-    ]
+    ],
+    "popup_s": 15
   },
   "graph_window_s": 60,
   "graph_pages": [
@@ -308,10 +303,7 @@
   "ai": {
     "local_timeout_s": 45,
     "local_max_tokens": 90,
-    "home_timeout_s": 30,
     "connect_timeout_s": 2,
-    "home_skip_s": 120,
-    "rescan_every_s": 300,
     "cache_ttl_s": 600,
     "retry_attempts": 3,
     "retry_wait_s": 4,
@@ -321,5 +313,10 @@
     "port": 8088,
     "share_minutes": 15,
     "car_name": "2023 Subaru Outback Wilderness (FA24 turbo, CVT)"
+  },
+  "modules": {
+    "cache": "data/modules.json",
+    "sweep_from": "700",
+    "sweep_to": "7F7"
   }
 }

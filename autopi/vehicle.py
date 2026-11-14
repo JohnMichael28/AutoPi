@@ -180,6 +180,43 @@ class Vehicle:
             except Exception:
                 return None
 
+    # ---- UDS (all-module access) ------------------------------------------
+    def uds_request(self, header_hex, payload_hex):
+        """Send one raw UDS request to the module at CAN ID `header_hex`
+        (e.g. "7B0") and return [(reply_id, bytes), ...]. Uses python-OBD's
+        per-command header (AT SH), then python-OBD switches back to the
+        engine header by itself for normal reads. Serialized + priority so
+        live polling waits while modules are being asked."""
+        if self.__connection is None:
+            raise IOError("no connection")
+        try:
+            from obd import OBDCommand
+            from obd.protocols import ECU
+        except Exception as err:
+            raise IOError("python-OBD too old for module access: " + str(err)[:40])
+
+        def decoder(messages):
+            # python-OBD's tx_id is NOT the CAN ID for non-engine modules
+            # (0x7D8 comes back as 0xF1), so read the 11-bit reply ID from
+            # the raw frame text instead ("7D8 07 59 02 ..." -> 0x7D8).
+            out = []
+            for m in messages:
+                rid = None
+                try:
+                    rid = int(m.frames[0].raw.replace(" ", "")[:3], 16)
+                except Exception:
+                    rid = getattr(m, "tx_id", None)
+                out.append((rid, bytes(m.data)))
+            return out
+        cmd = OBDCommand("UDS_" + header_hex + "_" + payload_hex, "UDS request",
+                         payload_hex.encode(), 0, decoder, ECU.ALL, False,
+                         header=header_hex.encode())
+        with self.priority():
+            with self.__lock:
+                response = self.__connection.query(cmd, force=True)
+        value = getattr(response, "value", None)
+        return value or []
+
     # ---- fast lane --------------------------------------------------------
     def start_fast_lane(self, gap_s=0.005):
         """Start the RPM/throttle/speed thread. gap_s is a tiny pause after

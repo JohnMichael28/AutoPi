@@ -35,22 +35,31 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
   car, yellow = what it means**. Raw data shows immediately; the AI
   translation fills in after. Clear codes is spam-proof (CANCEL is the big
   button where fast taps land; CLEAR is disabled for the first 2 s).
+- **All-module scan + MODULES menu** — generic OBD-II only reaches the engine
+  computer, so AutoPi also talks UDS (ISO 14229) to every module on the CAN
+  network: it finds which modules answer, reads each one's name / part number /
+  software and its stored P/C/B/U codes with status (failing now, confirmed,
+  pending), and explains them. DIAGNOSTICS > MODULES lists every module found
+  so you can open one in depth or clear just that module's codes (behind the
+  same spam-proof confirm gate). This is what catches faults like a failing
+  Starlink telematics module (DCM) that an engine-only scan can't see.
 - **One-tap HEALTH CHECK** — codes, pending, permanent, readiness, Mode 06,
   live sensors vs sourced ranges, warm-up and ML in 8 fixed sections, each
   with numbered "what to do" steps, plus an AI summary.
 - **Full diagnostic REPORT for your mechanic** — vehicle ID (VIN, ECU),
   check-engine status, distance/time since codes cleared, the full health
-  check, freeze frame, live snapshot, this drive's warnings and the last dyno
-  pull. Tap **SEND TO PHONE** → scan the QR code → it opens as a page on your
+  check (including every module's codes), freeze frame, live snapshot, this
+  drive's warnings and the last dyno pull. Tap **SEND TO PHONE** → scan the QR code → it opens as a page on your
   phone → Save as PDF and send it to the shop. Also copies to a USB stick.
 - **Fuel system analysis** — live trims + O2 with a health verdict and an AI
   diagnosis that updates only when the numbers really change.
 - **Warnings tab** — rule-based warnings AND the ML anomaly monitor together,
   each with "DO" steps from a rule playbook, tappable for AI detail. The ML
   section always shows whether the model is running (and why not, if not).
-- **"Look here" guide** — if a warning or a sustained anomaly keeps
-  happening, the talking face says what's wrong and the first thing to do,
-  then opens the graph page that shows it.
+- **"Look here" banner** — if a warning or a sustained anomaly keeps
+  happening, a banner pops up over whatever screen you're on with what's wrong,
+  the first thing to do and which graph shows it. It never switches screens on
+  its own: tap it to open the graph, or X / ignore it.
 - **Automatic virtual dyno** — always watching; every hard pull is recorded
   by itself with a timestamp (no START button). Browse your last 10 pulls.
   Clearly labeled ESTIMATED (OBD acceleration method with road-load
@@ -78,18 +87,21 @@ and a low temperature for steady answers. It runs as a `systemd` service pinned
 to 3 of the Pi's 4 cores (`taskset`) so it can never starve the real-time UI,
 and auto-starts on boot.
 
-**Tier 2 — Home Ollama (optional).** When the device is on home WiFi it can fall
-back to a larger model on a home server for richer answers. Off-grid, this tier
-is simply skipped — the local SLM already answered.
+**Tier 2 — Offline dictionary + playbook.** If the Pi model service is down,
+codes still get built-in plain-English descriptions and every warning still
+gets its rule-based "what to do" steps.
 
-**Tier 3 — Offline dictionary.** Built-in plain-English descriptions of common
-OBD-II codes as a final fallback.
+**Local only, by design.** AutoPi never waits on a laptop or any network: the
+copilot, the explainer and every screen use only the model on the Pi. The
+copilot also runs the obvious tool for your question in code *before* the
+first model turn, so the small model can usually answer in a single turn.
 
 **Responsive by design.** AI questions are serialized (the Pi model answers one
 at a time), identical questions share one answer, answers are cached for 10
-minutes, an unreachable laptop fails in 2 s and is skipped for a while, and
+minutes, a stopped model service is reported instantly (not after a timeout), and
 every screen retries on its own ("trying again in N s") while you stay on it —
-you never have to back out and reopen a screen to get an answer.
+you never have to back out and reopen a screen to get an answer. Voice answers
+run in the background so the screen never freezes while the model thinks.
 
 ## AI guardrails — the model proposes, the code decides
 
@@ -100,9 +112,8 @@ any attempt to instruct it is reported back to the driver instead of obeyed.
 On top of the prompt, code enforces it:
 
 - **Injection scanner** on everything going into and coming out of a model.
-- **Judge** — a code-level check (and, on the laptop tier, an optional judge
-  model that can only veto) that blocks invented numbers or codes, any claim
-  that an action was performed on the car, and instruction-like text.
+- **Judge** — a code-level check that blocks invented numbers or codes, any
+  claim that an action was performed on the car, and instruction-like text.
 - **Copilot agent** — a tool-using assistant run as a state machine
   (READY → DECIDE → TOOL → REVIEW → DONE/STOPPED) with hard budgets (deadline,
   turns, tool calls) and a per-profile tool allow-list; the math (injector
@@ -182,8 +193,8 @@ pinned to its baseline and never judged (see limitations).
   copilot, ML model, and a warm-up question to the on-Pi model so the first
   real answer is fast). It shows one status line, a progress bar and only the
   problems; the full log goes to `logs/boot.log`.
-- **Tiered, offline-first AI** — local SLM primary, home Ollama optional,
-  offline dictionary as a floor. The device never pretends to have data it
+- **Local-only AI** — the on-Pi SLM, with the offline dictionary and playbook
+  as a floor. The device never pretends to have data it
   doesn't.
 - **Resource isolation** — the SLM is pinned to 3 cores so inference can't
   starve the UI/OBD loop on the 4th.
@@ -226,13 +237,18 @@ produced a stable live connection.
   voltage warnings were removed and the ML ignores it.
 - **AutoPi cannot "fix" the car.** It is read-only over OBD-II; the warnings,
   health check and report give exact steps for you or a mechanic to do.
+- **Module names aren't published.** Subaru doesn't publish which CAN ID is
+  which module, so modules show by ID plus the name they report about
+  themselves; some may not answer a non-dealer tool. Service functions that
+  need dealer security access (calibrations, relearns, programming) stay out
+  of scope — AutoPi only reads codes and, with confirmation, clears them.
 - **Report sharing needs a shared network.** The phone and the Pi must be on
   the same WiFi (home, or the phone's hotspot) for the QR link to open.
 
 ## Setup
 
 1. Copy `config.example.json` to `config.json` and set your values (OBD port,
-   optional Ollama IP, etc.).
+   etc.).
 2. Install system packages on the Pi: `sudo apt install python3-pygame
    python3-full libportaudio2 cmake git`
 3. Create a venv with system packages and install requirements:

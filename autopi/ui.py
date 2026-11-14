@@ -9,6 +9,7 @@ from autopi.terminal import Terminal, MENUS
 from autopi.boot_loader import BootLoader
 from autopi.report_builder import DiagnosticReport
 from autopi.report_share import ReportServer, copy_to_usb, qr_matrix
+from autopi.module_scan import ModuleScanner
 from autopi.face_state import FaceState
 from autopi.bar_gauge import BarGauge
 from autopi.snapshot_thread import SnapshotThread
@@ -84,6 +85,25 @@ class UI:
             ignore=acfg.get("ignore_features", ["voltage", "voltage_d"]))
         self._anomaly_result = {"severity": "ok"}
         self._playbook = ActionPlaybook()     # "what to do" for every warning
+        # All-module access (UDS): engine, CVT, ABS, airbag, body, DCM...
+        self._modules = None
+        self._module_busy = False
+        self._module_view = None              # module shown on the module screen
+        self._clear_target = None             # None = engine codes, else a module
+        if self._vehicle is not None and hasattr(self._vehicle, "uds_request"):
+            try:
+                with open("config.json") as mf:
+                    mcfg = json.load(mf).get("modules", {})
+            except Exception:
+                mcfg = {}
+            try:
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "module_codes.json")) as cf:
+                    book = json.load(cf)
+            except Exception:
+                book = {}
+            self._modules = ModuleScanner(self._vehicle.uds_request, mcfg, book)
+        self._refresh_modules_menu()
         try:
             with open("config.json") as gpf:
                 gp_all = json.load(gpf)
@@ -91,7 +111,8 @@ class UI:
             gp_all = {}
         # Pointing at the right graph when an issue keeps happening.
         self._guide = IssueGuide(self._playbook, gp_all.get("issue_guide", {}))
-        self._pending_page = None
+        self._look_popup = None           # "look here" banner (never switches screens)
+        self._popup_s = gp_all.get("issue_guide", {}).get("popup_s", 15)
         self._graph_pages_cfg = gp_all.get("graph_pages")
         self._graph_window_s = gp_all.get("graph_window_s", 60)
         self._health_busy = False
@@ -247,8 +268,8 @@ class UI:
             ("WARM-UP + ISSUE GUIDE", lambda: ("ok", "cold-start + where-to-look")),
             ("AUTO DYNO", lambda: ("ok", "records every hard pull")),
             ("HEALTH CHECK", lambda: ("ok", str(len(self._readers)) + " readers + live checks")),
-            ("HOME AI (laptop)", self._boot_home_ai),
-            ("PI AI MODEL WARM-UP", self._boot_local_ai),
+            ("ALL-MODULE ACCESS (UDS)", self._boot_modules),
+            ("PI AI MODEL (LOCAL ONLY)", self._boot_local_ai),
         ]
 
     def _boot_screens(self):
@@ -311,13 +332,13 @@ class UI:
             return "warn", "OFF: " + st.get("reason", "")[:30]
         return "ok", st.get("reason", "loaded")[:34]
 
-    def _boot_home_ai(self):
-        if self._ai_client is None or not hasattr(self._ai_client, "home_reachable"):
-            return "warn", "no AI client"
-        ok, ip = self._ai_client.home_reachable()
-        if ok:
-            return "ok", "laptop Ollama at " + str(ip)
-        return "warn", "not on home WiFi - Pi AI only"
+    def _boot_modules(self):
+        if self._modules is None:
+            return "warn", "no OBD connection - engine codes only"
+        n = len([m for m in self._modules.modules if m.get("seen")])
+        if n == 0:
+            return "ok", "ready - run DIAGNOSTICS > ALL-MODULE SCAN once"
+        return "ok", str(n) + " modules known"
 
     def _boot_local_ai(self):
         # Ask the on-Pi model one tiny question so its weights and system
@@ -327,9 +348,9 @@ class UI:
             return "warn", "no AI client"
         try:
             if not self._ai_client.local_reachable():
-                return "warn", "llama-server not running"
+                return "fail", "Pi AI not running: sudo systemctl restart llama-server"
         except Exception:
-            return "warn", "llama-server not running"
+            return "fail", "Pi AI not running: sudo systemctl restart llama-server"
         t0 = time.monotonic()
         ans = self._ai_client.ask("Reply with exactly: READY")
         secs = str(round(time.monotonic() - t0, 1))
@@ -405,7 +426,15 @@ class UI:
             return
         self._quit_started = None
         x, y = pos
-        
+
+        # "Look here" banner: X dismisses, anywhere else on it opens the graph.
+        if self._look_popup and self.state != "boot" and y <= 74:
+            page = self._look_popup.get("page")
+            self._look_popup = None
+            if x < self.width - 70 and page:
+                self._open_graphs(page)
+            return
+
         if self.state == "confirm_clear":
             # CANCEL is the big safe button (left); CLEAR is the small red one
             # (right). Only a tap squarely inside CLEAR wipes codes; anything
@@ -474,6 +503,15 @@ class UI:
         
         elif self.state == "report_share":
             self.state = "report"
+        elif self.state == "module":
+            if x >= self.width - 100 and y <= 100:
+                self.state = "menu"
+            elif y >= self.height - 44 and self._module_view is not None:
+                self._clear_target = self._module_view
+                self.state = "confirm_clear"
+                self._clear_armed_at = time.monotonic() + 2.0
+            elif self.diag_screen.can_scroll():
+                self.diag_screen.scroll_by(-3 if y < self.height // 2 else 3)
         elif self.state in ("diag", "report"):
             if x >= self.width - 100 and y <= 100:
                 self._active_diag = None
@@ -576,7 +614,26 @@ class UI:
             return False
         return (time.monotonic() - self._quit_started) >= self._quit_hold
 
+    def _refresh_modules_menu(self):
+        items = []
+        self._module_by_label = {}
+        if self._modules is not None:
+            for mod in self._modules.modules:
+                label = self._modules.menu_label(mod)
+                self._module_by_label[label] = mod
+                items.append(label)
+        MENUS["MODULES"] = items + ["FIND MODULES (QUICK)", "FIND MODULES (FULL SWEEP)",
+                                    "< BACK"]
+
     def _menu_select(self, choice):
+        if self.menu == "MODULES" and choice != "< BACK":
+            if choice == "FIND MODULES (QUICK)":
+                self._find_modules(full=False)
+            elif choice == "FIND MODULES (FULL SWEEP)":
+                self._find_modules(full=True)
+            elif choice in getattr(self, "_module_by_label", {}):
+                self._open_module(self._module_by_label[choice])
+            return
         if self.menu == "GRAPHS" and choice != "< BACK":
             # Page names (e.g. FUEL) must not trigger the MAIN menu items
             # with the same name, so the graphs menu is handled first.
@@ -607,6 +664,7 @@ class UI:
                                   priority=getattr(self.data, "priority", None))
             self.state = "diag"
         elif choice == "CLEAR CODES":
+            self._clear_target = None
             self.state = "confirm_clear"
             # Spam-tap guard: CLEAR ignores every tap for the first 2 s.
             self._clear_armed_at = time.monotonic() + 2.0
@@ -620,6 +678,11 @@ class UI:
             self._pick_mode("camp"); self.state = "face"
         elif choice == "HEALTH CHECK":
             self._open_health_check()
+        elif choice == "ALL-MODULE SCAN":
+            self._open_module_scan()
+        elif choice == "MODULES":
+            self._refresh_modules_menu()
+            self.menu = "MODULES"; self.terminal.selected = 0
         elif choice == "ENGINEER MODE":
             self.state = "engineer"
         elif choice == "TUNING MONITOR":
@@ -719,6 +782,151 @@ class UI:
             return contextlib.nullcontext()
         return fn()
 
+    # ---- all-module access -------------------------------------------------
+    def _no_modules(self, title):
+        self.diag_screen.set_colored(title, [
+            ("RAW  no OBD connection (or python-OBD too old)", "raw"),
+            ("Plug in the OBDLink, key ON, and try again.", "ai")])
+        self.state = "diag"
+        self._active_diag = None
+
+    def _find_modules(self, full):
+        title = "FIND MODULES" + (" (FULL SWEEP)" if full else "")
+        if self._modules is None:
+            return self._no_modules(title)
+        self.state = "diag"
+        self._active_diag = None
+        if self._module_busy:
+            return
+        self._module_busy = True
+        box = {"token": self.diag_screen.set_colored(title, [
+            ("Asking every module ID if anyone is there...", "dim")])}
+
+        def progress(n, total, req):
+            if self.diag_screen.is_showing(box["token"]):
+                box["token"] = self.diag_screen.set_colored(title, [
+                    ("Asking ID " + req + "  (" + str(n) + " of " + str(total) + ")", "dim"),
+                    ("Key ON. Takes about " + ("75" if full else "10") + " s.", "dim")])
+
+        def worker():
+            try:
+                found = self._modules.discover(full=full, progress=progress)
+                items = [("--- MODULES THAT ANSWERED ---", "head")]
+                for mod in found:
+                    items.append(("RAW  " + self._modules.menu_label(mod), "raw"))
+                if found:
+                    items.append(("[OK] " + str(len(found)) + " module(s) found and saved. "
+                                  "Open DIAGNOSTICS > MODULES to look at each one.", "ai"))
+                else:
+                    items.append(("RAW  none", "raw"))
+                    items.append(("[WATCH] No module answered. Key ON? Try FULL SWEEP.", "ai"))
+            except Exception as err:
+                items = [("Find modules failed: " + str(err)[:80], "ai")]
+            self._refresh_modules_menu()
+            self._module_busy = False
+            if self.diag_screen.is_showing(box["token"]):
+                self.diag_screen.set_colored(title, items)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _open_module(self, mod):
+        # One module in depth: identity (name, part #, software), its codes
+        # in green, meaning in yellow, AI explanation, and a CLEAR bar.
+        title = self._modules.menu_label(mod)
+        self._module_view = mod
+        self._active_diag = None
+        self.state = "module"
+        token = self.diag_screen.set_colored(title, [("Asking the module...", "dim")])
+
+        def worker():
+            try:
+                ident = self._modules.identify(mod)
+                result = self._modules.read_dtcs(mod)
+                items = self._modules.module_items(mod, ident, result)
+            except Exception as err:
+                result = {"ok": False, "codes": []}
+                items = [("Module read failed: " + str(err)[:80], "ai")]
+            if not self.diag_screen.is_showing(token):
+                return
+            box = {"token": self.diag_screen.set_colored(title, items)}
+            if not result.get("codes") or self._ai_client is None:
+                return
+            items.append(("--- AI EXPLANATION ---", "head"))
+            prompt = ("A car module (" + self._modules.label(mod) + ") stored these codes "
+                      "(UDS, code-failuretype + status): "
+                      + "; ".join(c["code"] + " " + c["status_text"] for c in result["codes"])
+                      + ". Explain simply what they mean and what the owner should do. "
+                      "Do not invent details not in the codes.")
+
+            def status(msg):
+                if self.diag_screen.is_showing(box["token"]):
+                    box["token"] = self.diag_screen.set_colored(
+                        title, items + [(msg, "ai")], keep_scroll=True)
+            ans = self._ai_client.ask_with_retry(
+                prompt, on_status=status,
+                still_wanted=lambda: self.diag_screen.is_showing(box["token"]))
+            if self.diag_screen.is_showing(box["token"]):
+                self.diag_screen.set_colored(title, items + [(ans, "ai")], keep_scroll=True)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _open_module_scan(self):
+        title = "ALL-MODULE SCAN"
+        if self._modules is None:
+            return self._no_modules(title)
+        self.state = "diag"
+        self._active_diag = None
+        if self._module_busy:
+            return
+        self._module_busy = True
+        box = {"token": self.diag_screen.set_colored(title, [("Reading every module...", "dim")])}
+
+        def progress(n, total, name):
+            if self.diag_screen.is_showing(box["token"]):
+                box["token"] = self.diag_screen.set_colored(title, [
+                    ("Reading " + name + "  (" + str(n) + " of " + str(total) + ")", "dim")])
+
+        def worker():
+            try:
+                if len(self._modules.modules) <= 2:
+                    self._modules.discover(full=False)    # first time: find them
+                    self._refresh_modules_menu()
+                results = self._modules.scan_all(progress=progress)
+                items = self._modules.scan_items(results)
+            except Exception as err:
+                results = []
+                items = [("Scan failed: " + str(err)[:80], "ai")]
+            self._module_busy = False
+            if not self.diag_screen.is_showing(box["token"]):
+                return
+            box["token"] = self.diag_screen.set_colored(title, items)
+            if not any(r[1]["codes"] for r in results) or self._ai_client is None:
+                return
+            items.append(("--- AI SUMMARY ---", "head"))
+            prompt = ("All-module scan of this car (module ID: codes): "
+                      + self._modules.facts(results)
+                      + ". In 3 plain sentences: which systems have problems and what "
+                      "the owner should do first. Do not invent details.")
+
+            def status(msg):
+                if self.diag_screen.is_showing(box["token"]):
+                    box["token"] = self.diag_screen.set_colored(
+                        title, items + [(msg, "ai")], keep_scroll=True)
+            ans = self._ai_client.ask_with_retry(
+                prompt, on_status=status,
+                still_wanted=lambda: self.diag_screen.is_showing(box["token"]))
+            if self.diag_screen.is_showing(box["token"]):
+                self.diag_screen.set_colored(title, items + [(ans, "ai")], keep_scroll=True)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _draw_module_bar(self, surface):
+        pygame.draw.rect(surface, (8, 14, 8), (0, self.height - 44, self.width, 44))
+        pygame.draw.rect(surface, (200, 50, 50), (20, self.height - 40, self.width - 40, 34), 2)
+        font = pygame.font.SysFont("consolas", 18, bold=True)
+        t = font.render("CLEAR THIS MODULE'S CODES", True, (255, 120, 120))
+        surface.blit(t, (self.width // 2 - t.get_width() // 2, self.height - 33))
+
     def _open_graphs(self, page_name):
         # page_name None = keep the current page; else jump to that page.
         if page_name is not None:
@@ -740,19 +948,30 @@ class UI:
 
     def _draw_confirm_clear(self, surface):
         surface.fill((8, 14, 8))
+        target = self._clear_target
+        heading = ("CLEAR TROUBLE CODES?" if target is None else
+                   "CLEAR CODES IN " + self._modules.menu_label(target)[:26] + "?")
         title = pygame.font.SysFont("consolas", 24, bold=True).render(
-            "CLEAR TROUBLE CODES?", True, (255, 215, 40))
+            heading, True, (255, 215, 40))
         surface.blit(title, (40, 40))
         pygame.draw.line(surface, (30, 120, 55), (40, 82),
                          (self.width - 40, 82), 2)
         body = pygame.font.SysFont("consolas", 19)
-        for i, ln in enumerate([
-                "This erases stored codes AND freeze-frame",
-                "data from the car's computer.",
-                "",
-                "Only do this AFTER you've noted the codes",
-                "and fixed the problem. Permanent codes",
-                "won't clear until the monitor re-runs."]):
+        if target is None:
+            text = ["This erases stored codes AND freeze-frame",
+                    "data from the car's computer.",
+                    "",
+                    "Only do this AFTER you've noted the codes",
+                    "and fixed the problem. Permanent codes",
+                    "won't clear until the monitor re-runs."]
+        else:
+            text = ["This erases the stored codes in THIS",
+                    "module only (UDS 14 FF FF FF).",
+                    "",
+                    "It does not fix anything - if the fault",
+                    "is still there the code comes back.",
+                    "Save a REPORT first so the shop sees it."]
+        for i, ln in enumerate(text):
             surface.blit(body.render(ln, True, (57, 255, 120)), (40, 100 + i * 28))
         btn = pygame.font.SysFont("consolas", 22, bold=True)
         # CANCEL: big, bottom-RIGHT (where fast taps land).
@@ -779,6 +998,19 @@ class UI:
         return (40, self.height - 90, 180, 60)
 
     def _clear_codes(self):
+        if self._clear_target is not None:
+            mod = self._clear_target
+            self._clear_target = None
+            try:
+                ok, err = self._modules.clear_dtcs(mod)
+            except Exception as e:
+                ok, err = False, str(e)[:60]
+            self.diag_screen.set_colored("CLEAR " + self._modules.menu_label(mod), [
+                ("RAW  " + ("positive reply (54)" if ok else err), "raw"),
+                (("[OK] Codes cleared in this module. Re-open it to confirm they "
+                  "stay gone.") if ok else "[WATCH] The module did not clear its codes.", "ai")])
+            self.state = "diag"
+            return
         # Mode 04 - clears stored DTCs + freeze frame. NOT permanent codes.
         if self._vehicle is None:
             self.diag_screen.set_message("CLEAR CODES", ["No vehicle connected."])
@@ -1106,7 +1338,9 @@ class UI:
             self._vehicle, self._readers, self._snapshotter.latest,
             self._playbook, anomaly_status_fn=self._anomaly.status,
             anomaly_result_fn=lambda: dict(self._anomaly_result),
-            warmup_fn=lambda: self._snapshotter.latest().get("warmup"))
+            warmup_fn=lambda: self._snapshotter.latest().get("warmup"),
+            module_scan_fn=(self._modules.scan_all if self._modules is not None else None),
+            module_label_fn=(self._modules.menu_label if self._modules is not None else None))
 
         def worker():
             try:
@@ -1191,7 +1425,9 @@ class UI:
             self._vehicle, self._readers, self._snapshotter.latest,
             self._playbook, anomaly_status_fn=self._anomaly.status,
             anomaly_result_fn=lambda: dict(self._anomaly_result),
-            warmup_fn=lambda: self._snapshotter.latest().get("warmup"))
+            warmup_fn=lambda: self._snapshotter.latest().get("warmup"),
+            module_scan_fn=(self._modules.scan_all if self._modules is not None else None),
+            module_label_fn=(self._modules.menu_label if self._modules is not None else None))
         report = DiagnosticReport(
             self._vehicle, checker, self._snapshotter.latest,
             priority_fn=self._priority, readers=self._readers,
@@ -1452,25 +1688,25 @@ class UI:
                            if culprits else "readings")
                     ml_events.append("ML " + sev.upper() + ": " + top + " unusual")
                 self._warn_log.record(self._active_warnings + ml_events)
-                # Issue that KEEPS happening -> talking face says where to
-                # look, then the matching graph opens by itself.
+                # Issue that KEEPS happening -> a pop-up banner says where to
+                # look. It never switches your screen; tap it to open the
+                # graph, or ignore it and it goes away.
                 event = self._guide.update(self._active_warnings, self._anomaly_result)
-                if event is not None and self.state not in ("voice", "confirm_clear"):
-                    self.state = "face"
-                    if self.speech.active:
-                        self.speech.dismiss()
-                    self.speech.say(event["title"], event["say"])
-                    self._pending_page = event.get("page")
+                if event is not None:
+                    self._look_popup = {"title": event["title"], "say": event["say"],
+                                        "page": event.get("page"),
+                                        "issue": event.get("issue", ""),
+                                        "step": event.get("step", ""),
+                                        "until": time.monotonic() + self._popup_s}
             warm = snap.get("warmup") or {}
             self._warmup_speech(warm)
 
-        # Voice: when transcription finishes, route to AI and show the answer.
+        # Voice: when transcription finishes, answer on a background thread
+        # (the Pi model takes a while - the screen must never freeze on it).
         if self.state == "voice" and self._voice is not None:
             text = self._voice.poll_result()
             if text is not None:
-                answer = self._answer_question(text)
-                self.diag_screen.set_message("YOU ASKED: " + text, answer)
-                self.state = "voiceanswer"
+                self._start_voice_answer(text)
 
         if self.state == "boot":
             self.boot.update(dt)
@@ -1491,12 +1727,8 @@ class UI:
             self.speech.say(title, new_text)
 
         self.speech.update(dt)
-        # After the guardian finishes (or you tap it away), open the graph
-        # it pointed at.
-        if self._pending_page and self.state == "face" and not self.speech.active:
-            page = self._pending_page
-            self._pending_page = None
-            self._open_graphs(page)
+        if self._look_popup and time.monotonic() > self._look_popup["until"]:
+            self._look_popup = None
         # Graph history runs all the time so any page has the last minute.
         self.graph_pages.sample(self._live_snap())
         # Refresh the dyno with the latest captured pull while viewing it.
@@ -1509,6 +1741,49 @@ class UI:
                 
                 
     def draw(self, surface):
+        self._draw_screen(surface)
+        if self._look_popup and self.state != "boot":
+            self._draw_look_popup(surface)
+
+    def _draw_look_popup(self, surface):
+        # Banner across the top of WHATEVER screen you're on.
+        pop = self._look_popup
+        h = 74
+        pygame.draw.rect(surface, (20, 16, 4), (0, 0, self.width, h))
+        pygame.draw.rect(surface, (255, 215, 40), (0, 0, self.width, h), 3)
+        big = pygame.font.SysFont("consolas", 20, bold=True)
+        small = pygame.font.SysFont("consolas", 14)
+        surface.blit(big.render("!! " + pop["title"], True, (255, 215, 40)), (14, 8))
+        surface.blit(small.render(pop.get("issue", "")[:78], True, (230, 220, 180)), (14, 34))
+        left = int(pop["until"] - time.monotonic()) + 1
+        tail = "  |  tap to open  |  X (" + str(left) + "s)"
+        step = pop.get("step", "")
+        line = ("Do: " + step[:78 - len(tail) - 4] + tail) if step else tail.strip(" |")
+        surface.blit(small.render(line, True, (150, 140, 100)), (14, 53))
+        # X box (dismiss) on the right
+        pygame.draw.rect(surface, (255, 215, 40), (self.width - 62, 14, 46, 46), 2)
+        surface.blit(big.render("X", True, (255, 215, 40)), (self.width - 45, 25))
+
+    def _start_voice_answer(self, text):
+        self.state = "voiceanswer"
+        token = self.diag_screen.set_colored("YOU ASKED: " + text, [
+            ("Pi AI thinking... (runs on this Pi - no internet needed)", "ai")])
+
+        def worker():
+            try:
+                lines = self._answer_question(text)
+            except Exception as err:
+                lines = ["AI error: " + str(err)[:80]]
+            items = []
+            for line in lines:
+                kind = "raw" if line.startswith("  ") or line == "Evidence:" else "ai"
+                items.append((line, kind))
+            if self.diag_screen.is_showing(token):
+                self.diag_screen.set_colored("YOU ASKED: " + text, items)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _draw_screen(self, surface):
         snap = self._live_snap()
         mode = getattr(self.data, "mode", snap.get("mode", "highway"))
         # The WarningAdvisor is the single source of truth for the issue light:
@@ -1592,6 +1867,11 @@ class UI:
 
         if self.state == "report_share":
             self._draw_report_share(surface)
+            return
+
+        if self.state == "module":
+            self.diag_screen.draw(surface)
+            self._draw_module_bar(surface)
             return
         
         if self.state == "voice":

@@ -42,7 +42,7 @@ class HealthCheck:
 
     def __init__(self, vehicle, readers, snapshot_fn, playbook,
                  anomaly_status_fn=None, anomaly_result_fn=None,
-                 warmup_fn=None):
+                 warmup_fn=None, module_scan_fn=None, module_label_fn=None):
         self._vehicle = vehicle
         self._readers = readers or {}
         self._snap = snapshot_fn
@@ -50,6 +50,8 @@ class HealthCheck:
         self._ml_status = anomaly_status_fn
         self._ml_result = anomaly_result_fn
         self._warmup = warmup_fn
+        self._modules = module_scan_fn       # -> [(mod, result)] (UDS, all modules)
+        self._mod_label = module_label_fn or (lambda m: m.get("req", "?"))
 
     @staticmethod
     def _num(v):
@@ -244,12 +246,45 @@ class HealthCheck:
                     self._book.steps_for_anomaly(res))
         return sec
 
+    def _all_modules(self):
+        sec = Section("ALL MODULES (UDS - ABS, AIRBAG, BODY, DCM...)")
+        if self._modules is None:
+            sec.raw.append("module access not available (no OBD connection)")
+            sec.set("watch", "Only the engine computer was checked.")
+            return sec
+        results = self._modules()
+        answered = [r for r in results if r[1]["ok"]]
+        bad = [r for r in answered if r[1]["codes"]]
+        sec.raw.append(str(len(results)) + " modules asked, " + str(len(answered)) + " answered")
+        for mod, res in results:
+            if not res["ok"]:
+                sec.raw.append(self._mod_label(mod) + ": " + res["error"])
+            elif res["codes"]:
+                sec.raw.append(self._mod_label(mod) + ": " + ", ".join(
+                    c["code"] + " (" + c["status_text"] + ")" for c in res["codes"]))
+            else:
+                sec.raw.append(self._mod_label(mod) + ": no codes")
+        if bad:
+            steps = []
+            for mod, res in bad:
+                for c in res["codes"]:
+                    if c.get("meaning"):
+                        steps.append(c["code"].split("-")[0] + ": " + c["meaning"])
+            steps.append("Open DIAGNOSTICS > MODULES and tap the module for detail.")
+            sec.set("fix", "Codes stored outside the engine (" + ", ".join(
+                self._mod_label(m) for m, _r in bad) + ").", steps)
+        elif answered:
+            sec.set("ok", "No codes in any module that answered.")
+        else:
+            sec.set("watch", "No module answered the all-module scan (key ON?).")
+        return sec
+
     # ------------------------------------------------------------------
     def run(self):
         sections = []
         for part in (self._codes, self._pending, self._permanent,
                      self._readiness, self._mode06, self._live, self._warm,
-                     self._ml):
+                     self._ml, self._all_modules):
             try:
                 sections.append(part())
             except Exception as err:

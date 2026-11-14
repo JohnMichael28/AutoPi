@@ -64,7 +64,7 @@ class Copilot:
 
     def __init__(self, llm, registry, prompts, judge, scanner, security_log,
                  max_turns=5, max_tool_calls=3, deadline_s=45.0,
-                 max_rewrites=1, tool_result_chars=1500):
+                 max_rewrites=1, tool_result_chars=1500, route_first=True):
         self._llm = llm
         self._tools = registry
         self._prompts = prompts
@@ -76,6 +76,10 @@ class Copilot:
         self._deadline_s = deadline_s
         self._max_rewrites = max_rewrites
         self._tool_chars = tool_result_chars
+        # route_first: code runs the obvious tool for the question BEFORE the
+        # first model turn, so the small on-Pi model usually answers in ONE
+        # turn instead of spending a slow turn just asking for data.
+        self._route_first = route_first
 
     # ------------------------------------------------------------------
     def ask(self, question, profile="driving"):
@@ -110,6 +114,23 @@ class Copilot:
         turns = 0
         tool_calls = 0
         rewrites = 0
+        if self._route_first:
+            name, args = self._route(question)
+            try:
+                result = self._tools.run(name, args, profile)
+                rhits = self._scan.scan(result)
+                if rhits:
+                    incident("tool:" + name, "instruction-like text in tool result", rhits)
+                else:
+                    tool_calls += 1
+                    evidence.append(name + ": " + result[:400])
+                    step("TOOL", "pre-routed " + name + " -> " + result)
+                    messages.append({"role": "user", "content":
+                        fence("TOOL RESULT " + name, result, self._tool_chars)
+                        + "\nAutoPi: this data was fetched for you. Answer now "
+                        "if it is enough; call another tool only if needed."})
+            except Exception as err:
+                step("TOOL", "pre-route " + name + " failed: " + str(err)[:60])
         while True:
             # ---- budgets, checked by code, in order ----
             if time.time() - t0 >= self._deadline_s:
