@@ -8,7 +8,8 @@ from autopi.graphs import LiveGraph, DynoGraph
 from autopi.terminal import Terminal, MENUS
 from autopi.boot_loader import BootLoader
 from autopi.report_builder import DiagnosticReport
-from autopi.report_share import ReportServer, copy_to_usb, qr_matrix
+from autopi.report_share import (ReportServer, PiHotspot, copy_to_usb, qr_matrix,
+                                 wifi_qr_text)
 from autopi.module_scan import ModuleScanner
 from autopi.face_state import FaceState
 from autopi.bar_gauge import BarGauge
@@ -504,7 +505,14 @@ class UI:
                 self.state = "menu"           # tap elsewhere = back
         
         elif self.state == "report_share":
-            self.state = "report"
+            # Bottom buttons: AUTOPI WIFI | SAME WIFI | TEXT QR | DONE
+            if y >= self.height - 56:
+                slot = int(x // (self.width / 4))
+                if slot == 3:
+                    self._stop_sharing()
+                    self.state = "report"
+                else:
+                    self._set_share_mode(["hotspot", "same", "text"][slot])
         elif self.state == "module":
             if x >= self.width - 100 and y <= 100:
                 self.state = "menu"
@@ -1486,41 +1494,95 @@ class UI:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _share_report(self):
-        # Save HTML + text, serve it to the phone (QR), copy to any USB stick.
-        if self._report_data is None:
-            return
+    def _share_cfg(self):
         try:
             with open("config.json") as rf:
-                rcfg = json.load(rf).get("report", {})
+                return json.load(rf).get("report", {})
         except Exception:
-            rcfg = {}
+            return {}
+
+    def _share_report(self):
+        # Save HTML + text + USB copy, then show the share screen. Default
+        # mode is AUTOPI WIFI: works with ANY phone, no shared network.
+        if self._report_data is None:
+            return
+        rcfg = self._share_cfg()
         try:
             html_path, txt_path = self._report.save(self._report_data, self._report_summary)
         except Exception as err:
             self._report_share = {"error": "Save failed: " + str(err)[:60]}
             self.state = "report_share"
             return
-        if getattr(self, "_report_server", None) is None:
-            self._report_server = ReportServer("reports", port=rcfg.get("port", 8088),
-                                               lifetime_s=rcfg.get("share_minutes", 15) * 60)
-        # Short, stable address for the QR / typing: reports/latest.html
         latest = os.path.join("reports", "latest.html")
         try:
             import shutil
             shutil.copy2(html_path, latest)
         except Exception:
             latest = html_path
-        try:
-            url = self._report_server.url_for(latest)
-        except Exception as err:
-            url = None
-            self._report_share_err = str(err)[:60]
-        usb = copy_to_usb([html_path, txt_path])
-        self._report_share = {"url": url, "file": html_path, "usb": usb,
-                              "qr": qr_matrix(url) if url else None,
-                              "minutes": rcfg.get("share_minutes", 15)}
+        if getattr(self, "_report_server", None) is None:
+            self._report_server = ReportServer("reports", port=rcfg.get("port", 8088),
+                                               lifetime_s=rcfg.get("share_minutes", 15) * 60)
+        text_qr = self._report.to_qr_text(self._report_data, self._report_summary)
+        self._report_share = {"file": html_path, "latest": latest,
+                              "usb": copy_to_usb([html_path, txt_path]),
+                              "minutes": rcfg.get("share_minutes", 15),
+                              "mode": None, "status": "", "text_qr": qr_matrix(text_qr),
+                              "text_len": len(text_qr)}
         self.state = "report_share"
+        self._set_share_mode(rcfg.get("default_share", "hotspot"))
+
+    def _set_share_mode(self, mode):
+        info = self._report_share
+        if not info or info.get("error"):
+            return
+        info["mode"] = mode
+        if mode == "same":
+            if getattr(self, "_hotspot", None) is not None and self._hotspot.active:
+                info["status"] = "Stopping AutoPi WiFi..."
+                threading.Thread(target=self._stop_hotspot_only, daemon=True).start()
+            url = self._report_server.url_for(info["latest"])
+            info["url"] = url
+            info["qr"] = qr_matrix(url)
+            info["status"] = ""
+        elif mode == "hotspot":
+            if getattr(self, "_hotspot", None) is not None and self._hotspot.active:
+                return
+            info["status"] = "Starting AutoPi WiFi... (a few seconds)"
+            info["wifi_qr"] = None
+            info["url_qr"] = None
+            threading.Thread(target=self._start_hotspot, daemon=True).start()
+
+    def _start_hotspot(self):
+        rcfg = self._share_cfg()
+        info = self._report_share
+        self._hotspot = PiHotspot(iface=rcfg.get("hotspot_iface", "wlan0"))
+        ok, msg = self._hotspot.start(prefix=rcfg.get("hotspot_prefix", "AutoPi"))
+        if not ok:
+            info["status"] = ("AutoPi WiFi failed: " + msg[:70] + " - use TEXT QR or "
+                              "USB, or see README (hotspot permission).")
+            return
+        time.sleep(2)
+        url = ("http://" + self._hotspot.ip() + ":" + str(rcfg.get("port", 8088)) + "/"
+               + os.path.basename(info["latest"]))
+        self._report_server.start()
+        info["wifi_text"] = (self._hotspot.ssid, self._hotspot.password)
+        info["wifi_qr"] = qr_matrix(wifi_qr_text(self._hotspot.ssid, self._hotspot.password))
+        info["url_qr"] = qr_matrix(url)
+        info["url"] = url
+        info["status"] = ""
+
+    def _stop_hotspot_only(self):
+        hs = getattr(self, "_hotspot", None)
+        if hs is not None:
+            hs.stop()
+
+    def _stop_sharing(self):
+        # DONE: turn the AutoPi WiFi off and give the Pi its normal WiFi back.
+        threading.Thread(target=self._stop_hotspot_only, daemon=True).start()
+        srv = getattr(self, "_report_server", None)
+        if srv is not None:
+            srv.stop()
+            self._report_server = None
 
     def _draw_send_bar(self, surface):
         ready = self._report_data is not None
@@ -1533,62 +1595,83 @@ class UI:
         t = font.render(label, True, (8, 14, 8))
         surface.blit(t, (self.width // 2 - t.get_width() // 2, self.height - 33))
 
+    def _draw_qr(self, surface, matrix, x, y, size):
+        n = len(matrix)
+        cell = max(1, size // n)
+        real = n * cell
+        pygame.draw.rect(surface, (255, 255, 255), (x - 6, y - 6, real + 12, real + 12))
+        for r, row in enumerate(matrix):
+            for c, on in enumerate(row):
+                if on:
+                    pygame.draw.rect(surface, (0, 0, 0), (x + c * cell, y + r * cell, cell, cell))
+        return real
+
     def _draw_report_share(self, surface):
         surface.fill((8, 14, 8))
         green = (65, 255, 120)
         dim = (30, 120, 55)
         yellow = (255, 215, 40)
-        title = pygame.font.SysFont("consolas", 22, bold=True).render(
-            "SEND REPORT TO YOUR PHONE / MECHANIC", True, green)
-        surface.blit(title, (20, 16))
-        pygame.draw.line(surface, dim, (20, 52), (self.width - 20, 52), 2)
+        big = pygame.font.SysFont("consolas", 20, bold=True)
+        font = pygame.font.SysFont("consolas", 16)
+        small = pygame.font.SysFont("consolas", 13)
         info = self._report_share or {}
-        font = pygame.font.SysFont("consolas", 17)
-        small = pygame.font.SysFont("consolas", 14)
         if info.get("error"):
             surface.blit(font.render(info["error"], True, (255, 90, 90)), (24, 80))
             return
-        qr = info.get("qr")
-        x_text = 24
-        if qr:
-            n = len(qr)
-            cell = max(2, 300 // n)
-            size = n * cell
-            ox, oy = 24, 66
-            pygame.draw.rect(surface, (255, 255, 255), (ox - 6, oy - 6, size + 12, size + 12))
-            for r, row in enumerate(qr):
-                for c, on in enumerate(row):
-                    if on:
-                        pygame.draw.rect(surface, (0, 0, 0),
-                                         (ox + c * cell, oy + r * cell, cell, cell))
-            x_text = ox + size + 30
-        lines = [("1. Scan this with your phone camera", green),
-                 ("   (phone on the same WiFi / hotspot", dim),
-                 ("    as AutoPi)", dim),
-                 ("2. Report opens in the browser", green),
-                 ("3. Share > Print > Save as PDF,", green),
-                 ("   then text/email it to the shop", green),
-                 ("", green)]
-        if not qr:
-            lines.insert(0, ("(install 'qrcode' for a QR code -", yellow))
-            lines.insert(1, (" or type this address on the phone)", yellow))
-        if info.get("url"):
-            lines.append(("ADDRESS:", dim))
-            lines.append((info["url"], yellow))
-        lines.append(("", green))
-        if info.get("usb"):
-            lines.append(("USB: copied to " + info["usb"][0][-28:], yellow))
-        else:
-            lines.append(("USB: no stick plugged in", dim))
-        lines.append(("Saved on Pi: reports/", dim))
-        lines.append(("  " + os.path.basename(info.get("file", ""))[-30:], dim))
-        y = 70
-        for text, color in lines:
-            surface.blit(font.render(text, True, color), (x_text, y))
-            y += 26
-        foot = small.render("Link works for " + str(info.get("minutes", 15))
-                            + " min.  TAP anywhere to go back.", True, dim)
-        surface.blit(foot, (24, self.height - 26))
+        mode = info.get("mode")
+        titles = {"hotspot": "ANY PHONE: JOIN AUTOPI WIFI, THEN OPEN REPORT",
+                  "same": "SAME WIFI AS AUTOPI: SCAN TO OPEN REPORT",
+                  "text": "NO WIFI: THE SUMMARY IS INSIDE THIS QR"}
+        surface.blit(big.render(titles.get(mode, "SEND REPORT"), True, green), (20, 12))
+        pygame.draw.line(surface, dim, (20, 40), (self.width - 20, 40), 2)
+
+        if info.get("status"):
+            for i, chunk in enumerate(self._wrap_line(info["status"], 70)):
+                surface.blit(font.render(chunk, True, yellow), (24, 60 + i * 22))
+        elif mode == "hotspot" and info.get("wifi_qr") and info.get("url_qr"):
+            self._draw_qr(surface, info["wifi_qr"], 40, 78, 200)
+            self._draw_qr(surface, info["url_qr"], 300, 78, 200)
+            surface.blit(font.render("1. SCAN TO JOIN WIFI", True, green), (40, 52))
+            surface.blit(font.render("2. SCAN TO OPEN REPORT", True, green), (300, 52))
+            ssid, pw = info.get("wifi_text", ("", ""))
+            lines = [("Or join by hand:", dim), ("WiFi: " + ssid, yellow),
+                     ("Pass: " + pw, yellow), ("", dim),
+                     ("No internet needed.", dim), ("Phone may say 'no", dim),
+                     ("internet' - stay on", dim), ("it, then scan #2.", dim),
+                     ("", dim), ("Then Share > Print >", green), ("Save as PDF.", green)]
+            for i, (t, c) in enumerate(lines):
+                surface.blit(font.render(t, True, c), (560, 70 + i * 22))
+        elif mode == "same" and info.get("qr"):
+            self._draw_qr(surface, info["qr"], 40, 60, 300)
+            for i, (t, c) in enumerate([("Phone on the same WiFi", green),
+                                         ("as AutoPi? Scan this.", green), ("", dim),
+                                         ("ADDRESS:", dim), (info.get("url", "")[-34:], yellow)]):
+                surface.blit(font.render(t, True, c), (380, 80 + i * 24))
+        elif mode == "text" and info.get("text_qr"):
+            self._draw_qr(surface, info["text_qr"], 40, 52, 320)
+            for i, (t, c) in enumerate([("Works with NO network:", green),
+                                         ("the phone camera shows", green),
+                                         ("the summary as text -", green),
+                                         ("copy / text / email it.", green), ("", dim),
+                                         (str(info.get("text_len", 0)) + " characters", dim),
+                                         ("(codes + verdict + AI)", dim)]):
+                surface.blit(font.render(t, True, c), (400, 80 + i * 24))
+        elif mode == "text":
+            surface.blit(font.render("Install 'qrcode' on the Pi for QR codes.", True, yellow), (24, 70))
+
+        usb = info.get("usb")
+        foot = ("USB: copied to " + usb[0][-30:]) if usb else "USB: no stick plugged in"
+        surface.blit(small.render(foot + "   |   saved in reports/", True, dim), (24, self.height - 76))
+        labels = ["AUTOPI WIFI", "SAME WIFI", "TEXT QR", "DONE"]
+        w = self.width / 4
+        for i, lab in enumerate(labels):
+            key = ["hotspot", "same", "text", None][i]
+            on = key == mode
+            rect = (int(i * w) + 6, self.height - 52, int(w) - 12, 44)
+            pygame.draw.rect(surface, green if on else (20, 45, 26), rect)
+            pygame.draw.rect(surface, green, rect, 2)
+            t = big.render(lab, True, (8, 14, 8) if on else green)
+            surface.blit(t, (rect[0] + rect[2] // 2 - t.get_width() // 2, rect[1] + 11))
 
     def _answer_question(self, question):
         if not question:
@@ -1741,6 +1824,12 @@ class UI:
             self.speech.say(title, new_text)
 
         self.speech.update(dt)
+        # Share timer ran out (server shut itself off) -> AutoPi WiFi off too.
+        hs = getattr(self, "_hotspot", None)
+        if hs is not None and hs.active and self.state != "report_share":
+            srv = getattr(self, "_report_server", None)
+            if srv is None or not srv.running():
+                self._stop_sharing()
         if self._look_popup and time.monotonic() > self._look_popup["until"]:
             self._look_popup = None
         # Graph history runs all the time so any page has the last minute.

@@ -577,6 +577,57 @@ class ReportServerTests(unittest.TestCase):
             srv.stop()
 
 
+class HotspotTests(unittest.TestCase):
+    def test_wifi_qr_escapes(self):
+        from autopi.report_share import wifi_qr_text
+        self.assertEqual(wifi_qr_text("AutoPi-0042", "ab;cd"),
+                         "WIFI:T:WPA;S:AutoPi-0042;P:ab\\;cd;;")
+
+    def test_start_uses_sudo_when_needed_and_stop_restores_wifi(self):
+        from autopi.report_share import PiHotspot
+        calls = []
+
+        def run(args):
+            calls.append(args)
+            if args[:2] == ["nmcli", "-t"]:
+                return 0, "HomeWiFi:802-11-wireless:wlan0\nWired:802-3-ethernet:eth0"
+            if args[0] == "nmcli" and "hotspot" in args:
+                return 10, "Error: Not authorized to control networking."
+            return 0, "ok"
+        hs = PiHotspot(run=run)
+        ok, msg = hs.start()
+        self.assertTrue(ok)
+        self.assertTrue(hs.ssid.startswith("AutoPi-"))
+        self.assertGreaterEqual(len(hs.password), 8)
+        self.assertTrue(any(c[:3] == ["sudo", "-n", "nmcli"] and "hotspot" in c for c in calls))
+        hs.stop()
+        self.assertIn(["nmcli", "con", "up", "id", "HomeWiFi"], calls)
+        self.assertFalse(hs.active)
+
+    def test_failed_start_restores_and_reports(self):
+        from autopi.report_share import PiHotspot
+
+        def run(args):
+            if "hotspot" in args:
+                return 4, "Error: No Wi-Fi device found."
+            return 0, ""
+        hs = PiHotspot(run=run)
+        ok, msg = hs.start()
+        self.assertFalse(ok)
+        self.assertIn("No Wi-Fi device", msg)
+
+    def test_text_qr_fits(self):
+        rep = ReportTests().make([("P0171", "System Too Lean Bank 1")])
+        text = rep.to_qr_text(rep.collect(), "Lean on bank 1.")
+        self.assertLessEqual(len(text), 900)
+        self.assertIn("OVERALL", text)
+        try:
+            from autopi.report_share import qr_matrix
+        except Exception:
+            return
+        self.assertIsNotNone(qr_matrix(text))
+
+
 class BootLoaderTests(unittest.TestCase):
     def test_runs_every_step_and_reports_problems(self):
         import time as _t

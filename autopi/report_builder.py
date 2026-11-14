@@ -280,6 +280,27 @@ class DiagnosticReport:
         h.append("</body></html>")
         return "\n".join(h)
 
+    def to_qr_text(self, data, summary=None, limit=900):
+        """Short plain-text report that fits INSIDE a QR code (works with
+        no network at all - the phone camera just shows the text)."""
+        level, verdict_text = self.verdict(data)
+        lines = ["AUTOPI REPORT " + data["time"], data["car"]]
+        for label, val in data["vehicle"]:
+            if label == "VIN" and val:
+                lines.append("VIN " + val)
+        lines.append("OVERALL: " + verdict_text)
+        for s in data["sections"]:
+            if s.level in ("fix", "watch"):
+                lines.append("[" + s.level.upper() + "] " + s.title + ": " + s.meaning)
+                for raw in s.raw[:4]:
+                    lines.append("  " + raw)
+        if summary:
+            lines.append("AI: " + summary)
+        text = "\n".join(lines)
+        if len(text) > limit:
+            text = text[:limit - 30] + "\n...(full report on AutoPi)"
+        return text
+
     def save(self, data, summary=None, folder="reports"):
         os.makedirs(folder, exist_ok=True)
         stem = "autopi_report_" + time.strftime("%Y%m%d_%H%M%S")

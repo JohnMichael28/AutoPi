@@ -1,4 +1,13 @@
-"""Getting a report OFF the Pi: to your phone (QR code) or a USB stick.
+"""Getting a report OFF the Pi: to ANY phone (QR code) or a USB stick.
+
+Three ways, so it works for anyone, anywhere, with no setup on the phone:
+  1. AUTOPI WIFI  - the Pi turns its own WiFi into a private hotspot
+                    (random password each time). QR #1 joins it (every
+                    iPhone/Android camera understands WiFi QR codes), QR #2
+                    opens the report. No internet, no shared network needed.
+  2. SAME WIFI    - if the Pi and the phone are already on one network.
+  3. TEXT QR      - the summary itself is inside the QR code: the camera
+                    shows the text. Works with no WiFi at all.
 
 ReportServer  a tiny read-only web server that serves ONLY the reports/
               folder, on the Pi's own network address. Scan the QR code on
@@ -15,8 +24,10 @@ qr_matrix()   the QR code as a list of rows of booleans (needs the `qrcode`
 """
 import functools
 import os
+import secrets
 import shutil
 import socket
+import subprocess
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -132,3 +143,97 @@ def qr_matrix(text):
     qr.add_data(text)
     qr.make(fit=True)
     return qr.get_matrix()
+
+
+def iface_ip(iface):
+    """IPv4 address of one interface (e.g. wlan0 while it is the hotspot)."""
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show", iface],
+                             capture_output=True, text=True, timeout=3).stdout
+        for part in out.split():
+            if "/" in part and part.count(".") == 3:
+                return part.split("/")[0]
+    except Exception:
+        pass
+    return None
+
+
+def wifi_qr_text(ssid, password):
+    """Standard WiFi QR payload (scan with any phone camera to join)."""
+    def esc(v):
+        for ch in ("\\", ";", ",", ":", '"'):
+            v = v.replace(ch, "\\" + ch)
+        return v
+    return "WIFI:T:WPA;S:" + esc(ssid) + ";P:" + esc(password) + ";;"
+
+
+class PiHotspot:
+    """Turns the Pi's WiFi into a private access point with NetworkManager
+    (nmcli), then puts the previous WiFi connection back when done.
+
+    Guardrails: WPA2 with a fresh random password every time, only the
+    reports folder is served on it, and it is switched off by stop() (the UI
+    calls it on DONE and when the share timer runs out). Needs permission to
+    run nmcli: as the logged-in desktop user it usually just works; on a
+    console-only setup add the one-line sudoers rule from the README."""
+
+    def __init__(self, iface="wlan0", con_name="AutoPi-Share", run=None):
+        self.iface = iface
+        self.con_name = con_name
+        self._run = run or self._default_run
+        self._previous = None
+        self.active = False
+        self.ssid = None
+        self.password = None
+
+    @staticmethod
+    def _default_run(args):
+        p = subprocess.run(args, capture_output=True, text=True, timeout=25)
+        return p.returncode, (p.stdout + p.stderr).strip()
+
+    def _nmcli(self, args):
+        code, out = self._run(["nmcli"] + args)
+        if code != 0 and ("not authorized" in out.lower() or "permission" in out.lower()
+                          or "insufficient privileges" in out.lower()):
+            code, out = self._run(["sudo", "-n", "nmcli"] + args)
+        return code, out
+
+    def _active_wifi(self):
+        code, out = self._nmcli(["-t", "-f", "NAME,TYPE,DEVICE", "con", "show", "--active"])
+        if code != 0:
+            return None
+        for line in out.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 3 and parts[2] == self.iface and "wireless" in parts[1] \
+                    and parts[0] != self.con_name:
+                return parts[0]
+        return None
+
+    def start(self, prefix="AutoPi"):
+        """-> (ok, message)."""
+        self._previous = self._active_wifi()
+        self.ssid = prefix + "-" + "%04d" % (secrets.randbelow(10000))
+        self.password = secrets.token_hex(5)          # 10 chars, WPA2 needs 8+
+        code, out = self._nmcli(["dev", "wifi", "hotspot", "ifname", self.iface,
+                                 "con-name", self.con_name, "ssid", self.ssid,
+                                 "password", self.password])
+        if code != 0:
+            self.restore()
+            return False, out[:120] or "nmcli failed"
+        self.active = True
+        return True, "hotspot " + self.ssid + " on"
+
+    def ip(self):
+        return iface_ip(self.iface) or "10.42.0.1"   # NetworkManager's default
+
+    def restore(self):
+        if self._previous:
+            self._nmcli(["con", "up", "id", self._previous])
+
+    def stop(self):
+        if self.active:
+            self._nmcli(["con", "down", self.con_name])
+            self._nmcli(["con", "delete", self.con_name])
+            self.active = False
+        self.restore()
+        self._previous = None

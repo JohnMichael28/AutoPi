@@ -312,7 +312,10 @@
   "report": {
     "port": 8088,
     "share_minutes": 15,
-    "car_name": "2023 Subaru Outback Wilderness (FA24 turbo, CVT)"
+    "car_name": "2023 Subaru Outback Wilderness (FA24 turbo, CVT)",
+    "default_share": "hotspot",
+    "hotspot_iface": "wlan0",
+    "hotspot_prefix": "AutoPi"
   },
   "modules": {
     "cache": "data/modules.json",

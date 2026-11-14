@@ -49,8 +49,15 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
 - **Full diagnostic REPORT for your mechanic** — vehicle ID (VIN, ECU),
   check-engine status, distance/time since codes cleared, the full health
   check (including every module's codes), freeze frame, live snapshot, this
-  drive's warnings and the last dyno pull. Tap **SEND TO PHONE** → scan the QR code → it opens as a page on your
-  phone → Save as PDF and send it to the shop. Also copies to a USB stick.
+  drive's warnings and the last dyno pull. Tap **SEND TO PHONE** and pick how
+  to hand it over — works for any phone, no internet needed:
+  - **AUTOPI WIFI** (default) — the Pi makes its own password-protected WiFi
+    (a new random password every time). QR 1 joins it, QR 2 opens the report.
+    Your previous WiFi comes back when you tap DONE (or after 15 minutes).
+  - **SAME WIFI** — phone and Pi already on the same network; one QR opens it.
+  - **TEXT QR** — no network at all: the summary (verdict, codes, AI note) is
+    inside the QR itself; the phone camera shows it as text to copy/send.
+  - **USB stick** — the full HTML/text report is copied automatically.
 - **Fuel system analysis** — live trims + O2 with a health verdict and an AI
   diagnosis that updates only when the numbers really change.
 - **Warnings tab** — rule-based warnings AND the ML anomaly monitor together,
@@ -242,8 +249,13 @@ produced a stable live connection.
   themselves; some may not answer a non-dealer tool. Service functions that
   need dealer security access (calibrations, relearns, programming) stay out
   of scope — AutoPi only reads codes and, with confirmation, clears them.
-- **Report sharing needs a shared network.** The phone and the Pi must be on
-  the same WiFi (home, or the phone's hotspot) for the QR link to open.
+- **AutoPi WiFi sharing uses the Pi's WiFi radio.** While sharing, the Pi is
+  off your home WiFi; it reconnects when you tap DONE. If the share screen
+  says "Not authorized", let the app run `nmcli` without a password:
+  `sudo visudo -f /etc/sudoers.d/autopi-nmcli` and add
+  `john288 ALL=(root) NOPASSWD: /usr/bin/nmcli`.
+- **TEXT QR holds a summary, not the whole report** (QR codes max out around
+  a page of text); the full report still goes via WiFi or USB.
 
 ## Setup
 
