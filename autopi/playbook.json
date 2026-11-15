@@ -1,5 +1,5 @@
 {
-  "_about": "What-to-do steps for every AutoPi warning and ML anomaly. Data, not code: edit here. Warnings match on ALL 'match' phrases (first match wins). Anomalies match on the culprit sensor name prefix.",
+  "_about": "What-to-do steps for every AutoPi warning and ML anomaly. Data, not code: edit here. Warnings match on ALL 'match' phrases (first match wins). Anomalies match on the culprit sensor name prefix. An anomaly entry can be one list, or {\"low\": [...], \"high\": [...]} when the advice depends on whether the reading is below or above normal.",
   "warnings": [
     {
       "match": [
@@ -38,7 +38,7 @@
         "lean"
       ],
       "steps": [
-        "Lean = the ECU is ADDING fuel to make up for extra air.",
+        "Lean = the ECU is ADDING fuel: extra air is getting in, or too little fuel.",
         "Listen at idle for a hiss: vacuum leak (PCV hose, intake boots, brake booster line).",
         "Check the intake pipe after the MAF for cracks or loose clamps.",
         "Clean the MAF sensor (MAF cleaner spray only, never touch the wire).",
@@ -51,10 +51,11 @@
         "rich"
       ],
       "steps": [
-        "Rich = the ECU is PULLING fuel out.",
-        "Check the air filter - a clogged filter is the easy fix.",
-        "Smell for raw fuel: leaking injector or high fuel pressure.",
-        "Clean the MAF sensor - a dirty MAF can over-read."
+        "Rich = the ECU is PULLING fuel out: more fuel is getting in than the air needs.",
+        "Hold ~2,500 rpm in park: if the trim improves, suspect the EVAP purge valve or a leaking injector; if it stays, fuel pressure or a MAF reading high.",
+        "Smell the oil dipstick: a fuel smell means fuel in the oil (common on direct-injection engines with short, cold trips) - change the oil sooner.",
+        "Clean the MAF sensor (MAF cleaner spray only) - a dirty MAF can over-read.",
+        "Past -15 %, have fuel pressure and the injectors checked."
       ]
     },
     {
@@ -88,23 +89,49 @@
     }
   ],
   "anomaly": {
-    "coolant": [
-      "Coolant is behaving unlike your car's normal.",
-      "Watch the temp gauge; when cool, check the coolant level.",
-      "Make sure the radiator fan runs when the engine is hot."
-    ],
-    "stft": [
-      "Fuel mixture correction is unusual for this situation.",
-      "Listen for a vacuum hiss at idle; check intake clamps; clean the MAF."
-    ],
-    "ltft": [
-      "Long-term fuel correction moved away from your normal.",
-      "Listen for a vacuum hiss at idle; check intake clamps; clean the MAF."
-    ],
-    "afr": [
-      "Air/fuel ratio is unusual for this situation.",
-      "If it repeats: clean the MAF and check for intake/exhaust leaks."
-    ],
+    "coolant": {
+      "low": [
+        "Coolant is cooler than your car's normal.",
+        "Right after a start this is just warm-up - give it 10-15 min of driving.",
+        "If it stays below ~85 C after 15 min of driving, the thermostat may be stuck open (lukewarm heater, worse MPG)."
+      ],
+      "high": [
+        "Coolant is hotter than your car's normal.",
+        "Watch the temp gauge; when cool, check the coolant level.",
+        "Make sure the radiator fan runs when the engine is hot."
+      ]
+    },
+    "stft": {
+      "low": [
+        "Short-term fuel correction is pulling fuel (running rich right now).",
+        "If it repeats at idle, suspect the EVAP purge valve or a leaking injector."
+      ],
+      "high": [
+        "Short-term fuel correction is adding fuel (running lean right now).",
+        "If it repeats at idle, listen for a vacuum hiss; check intake clamps; clean the MAF."
+      ]
+    },
+    "ltft": {
+      "low": [
+        "Long-term fuel correction moved RICH (ECU pulling more fuel than usual).",
+        "Hold ~2,500 rpm: improves = purge valve / leaking injector; stays = fuel pressure or MAF over-reading.",
+        "Smell the oil dipstick for fuel; clean the MAF."
+      ],
+      "high": [
+        "Long-term fuel correction moved LEAN (ECU adding more fuel than usual).",
+        "Listen for a vacuum hiss at idle; check intake clamps and the PCV hose; clean the MAF."
+      ]
+    },
+    "afr": {
+      "low": [
+        "Commanded air/fuel is richer than usual - normal under hard load or when hot.",
+        "If it happens at steady cruise, watch the fuel trims and coolant."
+      ],
+      "high": [
+        "Commanded air/fuel is leaner than usual for this situation.",
+        "If it repeats: clean the MAF and check for intake/exhaust leaks."
+      ]
+    },
     "timing": [
       "Ignition timing is unusual - the ECU may be pulling timing.",
       "Check fuel quality (octane) and avoid heavy load until it clears."

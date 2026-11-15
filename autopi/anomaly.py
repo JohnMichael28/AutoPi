@@ -121,11 +121,14 @@ class AnomalyDetector:
                 else next(iter(self._regimes))
         return name
 
-    def score(self, snapshot):
+    def score(self, snapshot, skip=None):
         """Score one snapshot dict against its regime's baseline. Returns:
            {available, severity, anomalous, score, reason, regime,
             culprits[(feature, z)]}. Missing engineered keys fall back to that
-           regime's learned mean. Call once per cycle (maintains persistence)."""
+           regime's learned mean. Call once per cycle (maintains persistence).
+           skip = extra features not to judge this cycle (e.g. coolant while
+           the engine is still warming up) - pinned to the mean like ignore."""
+        ignore = self.ignore | set(skip or [])
         if not self.ok:
             return {"available": False, "severity": "ok"}
 
@@ -139,7 +142,7 @@ class AnomalyDetector:
         zmap = {}
         for f in self.features:
             v = snapshot.get(f, None)
-            if f in self.ignore or not isinstance(v, (int, float)):
+            if f in ignore or not isinstance(v, (int, float)):
                 v = baselines[f]["mean"]
             v = float(v)
             row.append(v)

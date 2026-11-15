@@ -138,7 +138,9 @@
     "ignore_features": [
       "voltage",
       "voltage_d"
-    ]
+    ],
+    "warm_coolant_c": 85,
+    "warm_run_min": 10
   },
   "poll": {
     "obd_fast": true,

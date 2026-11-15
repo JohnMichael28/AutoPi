@@ -96,16 +96,27 @@ class ActionPlaybook:
                 best = key
         return best
 
+    def _family_steps(self, fam, z):
+        """A family's steps can be one list, or split by direction:
+        {"low": [...], "high": [...]} - e.g. coolant BELOW normal (still
+        warming / thermostat) needs different advice than ABOVE normal
+        (overheating), and a fuel trim below normal means RICH, above means
+        LEAN. z < 0 = lower than this car's normal."""
+        entry = self._anomaly.get(fam, [])
+        if isinstance(entry, dict):
+            return list(entry.get("low" if z < 0 else "high", []))
+        return list(entry)
+
     def steps_for_anomaly(self, result, max_sensors=2):
         culprits = (result or {}).get("culprits", []) or []
         steps = []
         seen = set()
-        for feature, _z in culprits:
+        for feature, z in culprits:
             fam = self._family(feature)
             if fam is None or fam in seen:
                 continue
             seen.add(fam)
-            steps.extend(self._anomaly.get(fam, []))
+            steps.extend(self._family_steps(fam, z))
             if len(seen) >= max_sensors:
                 break
         if not steps:
@@ -113,10 +124,11 @@ class ActionPlaybook:
         return steps
 
     def describe_culprits(self, result, limit=3):
-        """['coolant temp +4.2 sigma', ...] in plain words."""
+        """['coolant temp -7.0 sigma (lower than normal)', ...]."""
         out = []
         for feature, z in ((result or {}).get("culprits", []) or [])[:limit]:
             sign = "+" if z >= 0 else ""
             out.append(self.plain_name(feature) + " " + sign + str(z)
-                       + " sigma from normal")
+                       + " sigma (" + ("higher" if z >= 0 else "lower")
+                       + " than normal)")
         return out

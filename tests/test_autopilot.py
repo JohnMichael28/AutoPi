@@ -134,7 +134,7 @@ class PlaybookTests(unittest.TestCase):
         steps = self.book.steps_for_anomaly(res)
         self.assertIn("coolant", steps[0].lower())
         names = self.book.describe_culprits(res)
-        self.assertEqual(names[0], "coolant (avg) +4.4 sigma from normal")
+        self.assertEqual(names[0], "coolant (avg) +4.4 sigma (higher than normal)")
 
 
 class FakeReader:
@@ -1040,6 +1040,187 @@ class MultiFileTrainingTests(unittest.TestCase):
             self.assertEqual(list(raw["rpm"]), [800, 900])
         finally:
             _shutil.rmtree(root, ignore_errors=True)
+
+
+class PermanentCodesTests(unittest.TestCase):
+    """Mode 0A is asked for directly (python-OBD 0.7.2 has no command for it)."""
+
+    class FakeCar:
+        def __init__(self, replies=None, error=None):
+            self.replies = replies or []
+            self.error = error
+            self.sent = []
+
+        def uds_request(self, header, payload, timeout_hex="32"):
+            self.sent.append((header, payload))
+            if self.error:
+                raise IOError(self.error)
+            return self.replies
+
+    def read(self, car):
+        from autopi.diagnostics import PermanentCodesReader
+        return PermanentCodesReader(car, None).read()
+
+    def test_asks_the_car_with_mode_0a_on_broadcast(self):
+        car = self.FakeCar([(0x7E8, bytes([0x4A, 0x00]))])
+        self.assertIsNone(self.read(car))                 # answered: none stored
+        self.assertEqual(car.sent, [("7DF", "0A")])
+
+    def test_decodes_codes_and_module(self):
+        car = self.FakeCar([(0x7E8, bytes([0x4A, 0x02, 0x20, 0x96, 0x04, 0x20]))])
+        codes = self.read(car)
+        self.assertEqual([c for c, _ in codes], ["P2096", "P0420"])
+        self.assertIn("ENGINE", codes[0][1])
+
+    def test_waits_through_busy_reply(self):
+        car = self.FakeCar([(0x7E8, bytes([0x7F, 0x0A, 0x78])),
+                            (0x7E8, bytes([0x4A, 0x01, 0x20, 0x96]))])
+        self.assertEqual(self.read(car)[0][0], "P2096")
+
+    def test_reports_why_when_it_cannot_read(self):
+        self.assertIn("did not answer", self.read(self.FakeCar([])))
+        self.assertIn("not supported",
+                      self.read(self.FakeCar([(0x7E8, bytes([0x7F, 0x0A, 0x11]))])))
+        self.assertIn("no connection", self.read(self.FakeCar(error="no connection")))
+
+    def test_old_reply_without_count_byte(self):
+        from autopi.diagnostics import decode_obd_dtc_reply
+        self.assertEqual(decode_obd_dtc_reply(bytes([0x4A, 0x20, 0x96, 0x00, 0x00])),
+                         ["P2096"])
+        self.assertEqual(decode_obd_dtc_reply(bytes([0x4A, 0x01, 0xC1, 0x00])), ["U0100"])
+
+
+class DirectionAwareAdviceTests(unittest.TestCase):
+    """Advice must match WHICH WAY a reading is off (Nov 15 report: a cool,
+    still-warming engine got overheating advice, and a rich trim got
+    vacuum-leak advice, which causes LEAN)."""
+
+    def setUp(self):
+        self.book = ActionPlaybook()
+
+    def test_cool_coolant_gets_warmup_thermostat_advice_not_overheat(self):
+        steps = " ".join(self.book.steps_for_anomaly(
+            {"culprits": [("coolant_temp", -7.0)]})).lower()
+        self.assertIn("thermostat", steps)
+        self.assertNotIn("fan runs", steps)
+
+    def test_hot_coolant_gets_overheat_advice(self):
+        steps = " ".join(self.book.steps_for_anomaly(
+            {"culprits": [("coolant_temp", 5.0)]})).lower()
+        self.assertIn("fan", steps)
+        self.assertNotIn("thermostat", steps)
+
+    def test_rich_trim_never_blames_vacuum_leak_or_air_filter(self):
+        ml = " ".join(self.book.steps_for_anomaly(
+            {"culprits": [("ltft_b1", -2.6)]})).lower()
+        warn = " ".join(self.book.steps_for_warning(
+            "FUEL TRIM DRIFT (LTFT -16%, rich)")).lower()
+        for text in (ml, warn):
+            self.assertIn("rich", text)
+            self.assertNotIn("vacuum", text)
+            self.assertNotIn("air filter", text)
+            self.assertIn("purge", text)
+
+    def test_lean_trim_points_at_vacuum_leak(self):
+        ml = " ".join(self.book.steps_for_anomaly(
+            {"culprits": [("ltft_b1", 3.0)]})).lower()
+        self.assertIn("lean", ml)
+        self.assertIn("vacuum", ml)
+
+    def test_describe_says_lower_or_higher(self):
+        names = self.book.describe_culprits({"culprits": [("coolant_temp", -7.0)]})
+        self.assertIn("lower than normal", names[0])
+
+
+class WarmingGuardTests(unittest.TestCase):
+    """Coolant is not judged until the engine is fully warm."""
+
+    class FakeDetector:
+        ok = True
+        _severity = "ok"
+
+        def __init__(self):
+            self.skips = []
+
+        def score(self, feat, skip=None):
+            self.skips.append(list(skip or []))
+            return {"available": True, "severity": "ok", "culprits": []}
+
+        def reset(self):
+            pass
+
+    def feed(self):
+        from autopi.anomaly_feed import AnomalyFeed
+        f = AnomalyFeed("models/definitely_missing.joblib",
+                        warm_coolant_c=85, warm_run_min=10)
+        f._det = self.FakeDetector()
+        return f
+
+    def test_80c_three_minutes_in_is_warming(self):
+        f = self.feed()
+        res = f.push({"rpm": 800, "coolant_temp": 80, "engine_load": 39, "run_time": 3})
+        self.assertTrue(res["warming"])
+        self.assertIn("coolant_temp", f._det.skips[-1])
+
+    def test_short_run_time_alone_counts_as_warming(self):
+        f = self.feed()
+        res = f.push({"rpm": 800, "coolant_temp": 90, "engine_load": 30, "run_time": 4})
+        self.assertTrue(res["warming"])
+
+    def test_fully_warm_engine_is_judged(self):
+        f = self.feed()
+        res = f.push({"rpm": 800, "coolant_temp": 91, "engine_load": 30, "run_time": 25})
+        self.assertFalse(res["warming"])
+        self.assertEqual(f._det.skips[-1], [])
+
+    def test_detector_skip_pins_feature_to_mean(self):
+        from autopi.anomaly import AnomalyDetector
+
+        class Ident:
+            def transform(self, rows):
+                return rows
+
+        class Calm:
+            def score_samples(self, X):
+                return [0.0]                     # forest never alarms
+
+        d = AnomalyDetector.__new__(AnomalyDetector)
+        d.ok = True; d.ignore = set(); d._streak = 0; d._clean = 0
+        d._severity = "ok"; d._fallback = "normal"
+        d.features = ["coolant_temp", "rpm"]
+        d._regimes = {"normal": {"scaler": Ident(), "model": Calm(), "threshold": -1.0,
+                                 "baselines": {"coolant_temp": {"mean": 90.0, "std": 1.0},
+                                               "rpm": {"mean": 800.0, "std": 50.0}}}}
+        cold = {"coolant_temp": 80.0, "engine_load": 30.0, "rpm": 800.0}
+        self.assertTrue(d.score(cold)["anomalous"])                     # judged: -10 sigma
+        d.reset()
+        res = d.score(cold, skip=["coolant_temp"])
+        self.assertFalse(res["anomalous"])                               # not judged
+        self.assertEqual(res["culprits"], [])
+
+
+class ReportScrollTests(unittest.TestCase):
+    """The last line of the REPORT must be reachable above the SEND TO PHONE bar."""
+
+    def test_last_line_visible_above_bottom_bar(self):
+        try:
+            import pygame
+            pygame.init()
+        except Exception:
+            self.skipTest("pygame not installed")
+        from autopi.diag_screen import DiagScreen
+        ds = DiagScreen(800, 480)
+        ds.set_colored("REPORT", [("line " + str(i), "raw") for i in range(60)])
+        ds.bottom_reserve = 44
+        ds.scroll_by(999)
+        surface = pygame.Surface((800, 480))
+        ds.draw(surface)
+        last_y = 66 + (ds._visible() - 1) * 24
+        self.assertLess(last_y + 24, 480 - 44)                  # above the bar
+        shown = ds._lines[ds._scroll:ds._scroll + ds._visible()]
+        self.assertEqual(shown[-1][0], ds._lines[-1][0])        # really the last line
+        ds.bottom_reserve = 0
+        self.assertGreater(ds._visible(), (480 - 96 - 44) // 24)
 
 
 if __name__ == "__main__":

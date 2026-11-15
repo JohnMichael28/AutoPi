@@ -211,20 +211,27 @@ class DiagScreen:
             lines.append(indent + current)
         return lines if lines else [""]
 
+    # Pixels at the bottom covered by a button bar the UI draws on top
+    # (REPORT's SEND TO PHONE, a module's CLEAR bar). Lines never go under it,
+    # so scrolling to the end always shows the last line.
+    bottom_reserve = 0
+
+    def _visible(self):
+        return max(1, (self.height - 96 - self.bottom_reserve) // 24)
+
     def scroll(self, direction):
         self._scroll = max(0, self._scroll + direction)
     
     def scroll_by(self, direction, visible=None):
         # Scroll the content. Clamps so you can't scroll past the ends.
         if visible is None:
-            visible = (self.height - 96) // 24
+            visible = self._visible()
         max_scroll = max(0, len(self._lines) - visible)
         self._scroll = max(0, min(self._scroll + direction, max_scroll))
 
     def can_scroll(self):
         # True if there's more content than fits on screen.
-        visible = (self.height - 96) // 24
-        return len(self._lines) > visible
+        return len(self._lines) > self._visible()
 
     def draw(self, surface):
         self._last_draw = time.monotonic()
@@ -233,7 +240,7 @@ class DiagScreen:
         pygame.draw.line(surface, TERM_DIM, (20, 54), (self.width - 20, 54), 2)
         y = 66
         line_h = 24
-        visible = (self.height - 96) // line_h
+        visible = self._visible()
         for text, color in self._lines[self._scroll:self._scroll + visible]:
             surface.blit(self.font_body.render(text, True, color), (24, y))
             y += line_h
@@ -241,4 +248,5 @@ class DiagScreen:
             hint = "TAP up/down to scroll  -  TOP-RIGHT to exit"
         else:
             hint = "TAP to go back"
-        surface.blit(self.font_hint.render(hint, True, TERM_DIM), (20, self.height - 26))
+        surface.blit(self.font_hint.render(hint, True, TERM_DIM),
+                     (20, self.height - 26 - self.bottom_reserve))

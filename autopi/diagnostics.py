@@ -94,23 +94,95 @@ class PendingCodesReader(DiagnosticReader):
         return codes
 
 
+# Mode 03/07/0A replies on CAN: [service+0x40, count, then 2 bytes per code].
+OBD_LETTERS = "PCBU"
+OBD_REPLY_NAMES = {0x7E8: "ENGINE", 0x7E9: "TRANSMISSION", 0x7EA: "HYBRID/OTHER"}
+OBD_NRC = {0x11: "service not supported", 0x12: "not supported",
+           0x22: "conditions not correct", 0x31: "request out of range"}
+
+
+def decode_obd_dtc(b0, b1):
+    """2 OBD bytes -> 'P2096'."""
+    return (OBD_LETTERS[(b0 >> 6) & 0x03] + str((b0 >> 4) & 0x03)
+            + "%X" % (b0 & 0x0F) + "%02X" % b1)
+
+
+def decode_obd_dtc_reply(payload, service=0x0A):
+    """One module's reply bytes -> list of codes, or None if the reply isn't
+    a positive answer to `service`. Handles the count byte that CAN cars
+    send, and older replies without it."""
+    if not payload or payload[0] != service + 0x40:
+        return None
+    body = payload[1:]
+    if len(body) % 2 == 1 and body and body[0] * 2 == len(body) - 1:
+        body = body[1:]                  # CAN: first byte is the code count
+    codes = []
+    for i in range(0, len(body) - 1, 2):
+        if body[i] == 0 and body[i + 1] == 0:
+            continue                     # padding, not a code
+        codes.append(decode_obd_dtc(body[i], body[i + 1]))
+    return codes
+
+
+def obd_code_description(code):
+    try:
+        from obd.codes import DTC        # python-OBD's generic code book
+        return DTC.get(code, "")
+    except Exception:
+        return ""
+
+
 class PermanentCodesReader(DiagnosticReader):
     """Mode 0A - permanent codes stored in non-volatile memory. Can't be
-    cleared by disconnecting the battery; clear only after real repair."""
+    cleared with Mode 04 or by disconnecting the battery; the ECU removes
+    one only after the repair is proven by a passing drive cycle.
+
+    python-OBD 0.7.2 has no Mode 0A command, and it refuses commands that
+    aren't on the car's Mode 01 "supported" list - so the old reader gave up
+    without ever asking the car. This one asks the car directly (raw request
+    "0A" to the OBD broadcast address 7DF, same raw path as the all-module
+    scan) and decodes the reply itself.
+
+    read() returns: None = car answered, no permanent codes;
+    [(code, description)] = permanent codes; str = could not read, and why."""
 
     def name(self):
         return "Permanent Codes (cannot be cleared until fixed)"
 
     def read(self):
-        # Mode 0A support varies; guard it so a missing command never crashes.
+        request = getattr(self._vehicle, "uds_request", None)
+        if request is None:
+            return "Permanent codes need a direct adapter connection (simulator has none)."
         try:
-            cmd = obd.commands.GET_DTC_PERMANENT
-        except AttributeError:
-            return "Permanent code reading not available on this setup."
-        codes = self._vehicle.read_value(cmd)
-        if not codes:
+            replies = request("7DF", "0A")
+        except Exception as err:
+            return "Permanent codes not read: " + str(err)
+        if not replies:
+            return "Car did not answer the permanent-code request (try with the engine running)."
+        found = []
+        answered = False
+        refusals = []
+        for can_id, payload in replies:
+            if len(payload) >= 3 and payload[0] == 0x7F and payload[1] == 0x0A:
+                if payload[2] == 0x78:
+                    continue                     # "busy, wait" - real answer follows
+                refusals.append(OBD_NRC.get(payload[2], "refused 0x%02X" % payload[2]))
+                continue
+            codes = decode_obd_dtc_reply(payload, 0x0A)
+            if codes is None:
+                continue
+            answered = True
+            where = OBD_REPLY_NAMES.get(can_id, "%03X" % can_id)
+            for code in codes:
+                desc = obd_code_description(code)
+                found.append((code, (desc + " " if desc else "") + "(" + where + ")"))
+        if found:
+            return found
+        if answered:
             return None
-        return codes
+        if refusals:
+            return "Car refused the permanent-code request: " + refusals[0] + "."
+        return "Car did not answer the permanent-code request (try with the engine running)."
 
 
 class ReadinessReader(DiagnosticReader):

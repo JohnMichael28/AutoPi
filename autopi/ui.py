@@ -95,7 +95,9 @@ class UI:
             acfg = {}
         self._anomaly = AnomalyFeed(
             acfg.get("model_path", "models/anomaly_model.joblib"),
-            ignore=acfg.get("ignore_features", ["voltage", "voltage_d"]))
+            ignore=acfg.get("ignore_features", ["voltage", "voltage_d"]),
+            warm_coolant_c=acfg.get("warm_coolant_c", 85.0),
+            warm_run_min=acfg.get("warm_run_min", 10.0))
         self._anomaly_result = {"severity": "ok"}
         self._playbook = ActionPlaybook()     # "what to do" for every warning
         # All-module access (UDS): engine, CVT, ABS, airbag, body, DCM...
@@ -1964,6 +1966,9 @@ class UI:
             self._draw_waiting(surface, self._waiting_title, self._waiting_msg)
             return
         
+        # Screens with a button bar along the bottom: keep text above it.
+        self.diag_screen.bottom_reserve = 44 if self.state in ("report", "module") else 0
+
         if self.state == "confirm_clear":
             self._draw_confirm_clear(surface)
             return

@@ -29,9 +29,20 @@ class AnomalyFeed:
     RAW = ["rpm", "speed", "coolant_temp", "engine_load", "throttle",
            "boost", "afr", "voltage", "timing", "stft_b1", "ltft_b1"]
 
-    def __init__(self, model_path="models/anomaly_model.joblib", ignore=None):
+    # While the engine is still warming up, coolant is SUPPOSED to be below
+    # normal. The model's cold_start regime ends at 70 C, but a turbo engine
+    # is not fully warm until ~85-90 C, so between 70 and 85 C (or in the
+    # first minutes after a start) coolant was judged against fully-warm
+    # driving and raised false "coolant unusual" alarms. Those features are
+    # simply not judged until the engine is warm (config "anomaly").
+    WARMING_FEATURES = ["coolant_temp", "coolant_avg5", "coolant_d"]
+
+    def __init__(self, model_path="models/anomaly_model.joblib", ignore=None,
+                 warm_coolant_c=85.0, warm_run_min=10.0):
         self._det = AnomalyDetector(model_path, ignore=ignore) \
             if AnomalyDetector else None
+        self._warm_coolant_c = warm_coolant_c
+        self._warm_run_min = warm_run_min
         self._buf = deque(maxlen=11)      # last 11 rows for avg5 + lag10
         self._last = {}                   # last seen value per key (forward-fill)
 
@@ -90,7 +101,19 @@ class AnomalyFeed:
         feat["voltage_d"] = delta10("voltage")
         feat["rpm_d"] = delta10("rpm")
 
-        return self._det.score(feat)
+        warming = self.is_warming(row["coolant_temp"], snap.get("run_time"))
+        result = self._det.score(feat, skip=self.WARMING_FEATURES if warming else None)
+        result["warming"] = warming
+        return result
+
+    def is_warming(self, coolant, run_min):
+        """True until the engine is fully warm: coolant below warm_coolant_c,
+        or run time (minutes) below warm_run_min when the car reports it."""
+        if isinstance(coolant, (int, float)) and coolant < self._warm_coolant_c:
+            return True
+        if isinstance(run_min, (int, float)) and run_min < self._warm_run_min:
+            return True
+        return False
 
     def reset(self):
         self._buf.clear(); self._last.clear()

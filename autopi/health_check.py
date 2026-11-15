@@ -114,7 +114,9 @@ class HealthCheck:
         raw, err = self._read("PERMANENT CODES")
         if err or isinstance(raw, str):
             sec.raw.append(err or raw)
-            sec.set("watch", "Permanent codes are not readable on this setup.")
+            sec.set("watch", "Permanent codes could not be read this time.",
+                    ["Try again with the engine running.",
+                     "Every 2023 car supports Mode 0A - this is a read problem, not the car."])
         elif raw:
             sec.raw.append(str(raw))
             sec.set("fix", "Codes the ECU keeps until the repair is proven.",
@@ -238,6 +240,8 @@ class HealthCheck:
                        + "   score " + str(res.get("score", "--")))
         for name in self._book.describe_culprits(res, limit=3):
             sec.raw.append(name)
+        if res.get("warming"):
+            sec.raw.append("engine still warming up - coolant not judged yet")
         if sev == "ok":
             sec.set("ok", "Readings match what is normal for THIS car.")
         else:
