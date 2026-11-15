@@ -38,6 +38,56 @@ VEHICLE_PIDS = [
     ("Run time with check-engine light on", "RUN_TIME_MIL", ""),
 ]
 
+# Fuel system status (Mode 01 PID 03) in plain words. python-OBD gives a
+# tuple (fuel system 1, fuel system 2); system 2 is '' on one-bank engines.
+# First match wins, so the fault wordings are checked before plain "closed loop".
+FUEL_STATUS_WORDS = [
+    ("system failure", "Open loop - SYSTEM FAULT",
+     "Open loop = the engine computer is NOT fine-tuning the fuel mix, because "
+     "something in the feedback system failed. Check for codes - this needs attention."),
+    ("fault in the feedback", "Closed loop, but with a sensor fault",
+     "The computer is still fine-tuning the fuel mix, but one oxygen sensor or part "
+     "of the feedback system has a problem. Check for codes."),
+    ("insufficient engine temperature", "Open loop - engine still cold (normal)",
+     "Open loop = the oxygen sensors aren't warm enough to trust yet, so the computer "
+     "uses a preset fuel recipe. Normal for the first minute or two after a cold start."),
+    ("engine load", "Open loop - hard acceleration or coasting (normal)",
+     "The computer stops fine-tuning for a moment: extra fuel at full throttle, or "
+     "fuel shut off while coasting. Normal while it lasts."),
+    ("closed loop", "Closed loop (normal)",
+     "Closed loop = the engine computer reads the oxygen sensor in the exhaust and "
+     "fine-tunes the fuel mix many times a second, like cruise control for the "
+     "air/fuel mix. This is how a warm, healthy engine should run."),
+]
+
+
+def describe_fuel_status(value):
+    """python-OBD FUEL_STATUS value -> (short text, plain-English note).
+    note is '' when the wording isn't recognised (the raw text is shown)."""
+    if value is None:
+        return None, ""
+    parts = value if isinstance(value, (tuple, list)) else [value]
+    parts = [str(p).strip() for p in parts if p not in (None, "") and str(p).strip()]
+    if not parts:
+        return None, ""
+    shorts, notes = [], []
+    for part in parts:
+        low = part.lower()
+        for key, short, note in FUEL_STATUS_WORDS:
+            if key in low:
+                shorts.append(short)
+                notes.append(note)
+                break
+        else:
+            shorts.append(part)
+    if len(shorts) == 2 and shorts[0] != shorts[1]:
+        short = "system 1: " + shorts[0] + "; system 2: " + shorts[1]
+    else:
+        short = shorts[0]
+    note = notes[0] if notes else ""
+    return short, note
+
+
 LIVE_FIELDS = [("rpm", "RPM", ""), ("speed", "Speed", " mph"),
                ("coolant_temp", "Coolant", " C"), ("intake_temp", "Intake air", " C"),
                ("engine_load", "Engine load", " %"), ("throttle", "Throttle", " %"),
@@ -61,16 +111,19 @@ class DiagnosticReport:
         self.car_name = car_name
 
     # ---- reading --------------------------------------------------------
-    def _read(self, name):
+    def _read_raw(self, name):
         if self._vehicle is None or obd is None:
             return None
         cmd = getattr(obd.commands, name, None)
         if cmd is None:
             return None
         try:
-            v = self._vehicle.read_value(cmd)
+            return self._vehicle.read_value(cmd)
         except Exception:
             return None
+
+    def _read(self, name):
+        v = self._read_raw(name)
         if v is None:
             return None
         if isinstance(v, (bytes, bytearray)):
@@ -91,7 +144,14 @@ class DiagnosticReport:
             data = {"time": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "car": self.car_name, "vehicle": [], "mil": None,
                     "dtc_count": None}
+            data["vehicle_notes"] = {}
             for label, name, unit in VEHICLE_PIDS:
+                if name == "FUEL_STATUS":
+                    short, note = describe_fuel_status(self._read_raw(name))
+                    data["vehicle"].append((label, short))
+                    if note:
+                        data["vehicle_notes"][label] = note
+                    continue
                 data["vehicle"].append((label, self._read(name)))
             data["mil"], data["dtc_count"] = self._mil()
             data["sections"] = self._health.run()
@@ -136,9 +196,12 @@ class DiagnosticReport:
         tag = {"fix": "[FIX] ", "watch": "[WATCH] ", "ok": "[OK] "}[level]
         out = [("--- " + data["car"] + " ---", "head"),
                ("RAW  report " + data["time"], "raw")]
+        notes = data.get("vehicle_notes", {})
         for label, val in data["vehicle"]:
             if val is not None:
                 out.append(("RAW  " + label + ": " + val, "raw"))
+                if notes.get(label):
+                    out.append(("  " + notes[label], "ai"))
         if data["mil"] is not None:
             out.append(("RAW  check-engine light: " + ("ON" if data["mil"] else "off")
                         + ", codes reported: " + str(data["dtc_count"]), "raw"))
@@ -221,9 +284,12 @@ class DiagnosticReport:
             h.append("<h2>AI summary</h2><p class='ai'>" + e(summary) + "</p>")
 
         h.append("<h2>Vehicle</h2><table>")
+        notes = data.get("vehicle_notes", {})
         for label, val in data["vehicle"]:
             h.append("<tr><td class='k'>" + e(label) + "</td><td class='raw'>"
                      + e(val if val is not None else "not reported") + "</td></tr>")
+            if val is not None and notes.get(label):
+                h.append("<tr><td></td><td class='ai'>" + e(notes[label]) + "</td></tr>")
         if data["mil"] is not None:
             h.append("<tr><td class='k'>Check-engine light</td><td class='raw'>"
                      + ("ON" if data["mil"] else "off") + " (" + e(str(data["dtc_count"]))

@@ -57,6 +57,12 @@ NRC = {0x10: "general reject", 0x11: "service not supported",
 # and 0x7E8-0x7EF are reply IDs.
 NOT_MODULES = set([0x7DF] + list(range(0x7E8, 0x7F0)))
 
+# Modules whose codes AutoPi already reads the standard OBD-II way (Mode 03
+# stored / 07 pending / 0A permanent). Many engine computers don't answer the
+# UDS code request at all - that is normal, not a failure, so it's labelled so.
+OBD_CHECKED = {0x7E0}
+OBD_CHECKED_NOTE = "normal - engine codes are read the standard OBD-II way (Health Check 1-3)"
+
 # Request IDs every OBD-II CAN car uses for these two modules.
 STANDARD_NAMES = {0x7E0: "ENGINE (ECM)", 0x7E1: "TRANSMISSION (TCM)"}
 
@@ -270,8 +276,12 @@ class ModuleScanner:
             faults = [c for c in entries if c["severity"] != "info"]
             return {"ok": True, "error": "", "codes": faults, "tries": tries,
                     "not_tested": len(entries) - len(faults)}
-        return {"ok": False, "error": tries[-1][1] if tries else "no reply",
-                "codes": [], "tries": tries}
+        error = tries[-1][1] if tries else "no reply"
+        obd_checked = int(mod["req"], 16) in OBD_CHECKED
+        if obd_checked:
+            error = error.replace("no reply", "no UDS reply", 1) + " - " + OBD_CHECKED_NOTE
+        return {"ok": False, "error": error, "codes": [], "tries": tries,
+                "obd_checked": obd_checked}
 
     def _entry(self, code, st):
         return {"code": code, "status": st, "status_text": decode_status(st),
@@ -335,7 +345,11 @@ class ModuleScanner:
         items = []
         if not result["ok"]:
             items.append(("RAW  " + result["error"], "raw"))
-            items.append(("This module did not give its codes to AutoPi.", "ai"))
+            if result.get("obd_checked"):
+                items.append(("[OK] Not a problem: this computer's codes come from the "
+                              "standard OBD-II check (stored, pending, permanent).", "ai"))
+            else:
+                items.append(("This module did not give its codes to AutoPi.", "ai"))
             return items
         quiet = result.get("not_tested", 0)
         if quiet:
@@ -387,7 +401,8 @@ class ModuleScanner:
         parts = []
         for mod, res in results:
             if not res["ok"]:
-                parts.append(mod["req"] + ": no answer")
+                parts.append(mod["req"] + (": checked via OBD-II" if res.get("obd_checked")
+                                           else ": no answer"))
             else:
                 parts.append(mod["req"] + ": " + (", ".join(c["code"] for c in res["codes"]) or "no codes"))
         return "; ".join(parts)

@@ -1223,5 +1223,45 @@ class ReportScrollTests(unittest.TestCase):
         self.assertGreater(ds._visible(), (480 - 96 - 44) // 24)
 
 
+class ReportWordingTests(unittest.TestCase):
+    """Nov 15 report: fuel status printed as a Python tuple, and the engine's
+    normal 'no UDS reply' looked like a failure."""
+
+    def test_closed_loop_in_plain_words(self):
+        from autopi.report_builder import describe_fuel_status
+        short, note = describe_fuel_status(
+            ("Closed loop, using oxygen sensor feedback to determine fuel mix", ""))
+        self.assertEqual(short, "Closed loop (normal)")
+        self.assertIn("oxygen sensor", note)
+        self.assertNotIn("(", short.replace("(normal)", ""))      # no tuple
+
+    def test_other_fuel_states(self):
+        from autopi.report_builder import describe_fuel_status
+        self.assertIn("cold", describe_fuel_status(
+            ("Open loop due to insufficient engine temperature", ""))[0])
+        self.assertIn("FAULT", describe_fuel_status(
+            ("Open loop due to system failure", ""))[0])
+        self.assertIn("sensor fault", describe_fuel_status(
+            ("Closed loop, using at least one oxygen sensor but there is a fault "
+             "in the feedback system", ""))[0])
+        self.assertEqual(describe_fuel_status(("Something new", "")), ("Something new", ""))
+        self.assertEqual(describe_fuel_status(None), (None, ""))
+
+    def test_engine_no_uds_reply_is_labelled_normal(self):
+        import tempfile
+        from autopi.module_scan import ModuleScanner
+        sc = ModuleScanner(lambda req, payload, timeout_hex="32": [],
+                           {"cache": os.path.join(tempfile.mkdtemp(), "m.json")})
+        eng = sc.read_dtcs({"req": "7E0"})
+        self.assertFalse(eng["ok"])
+        self.assertTrue(eng["obd_checked"])
+        self.assertIn("OBD-II", eng["error"])
+        items = " ".join(t for t, _k in sc._code_items(eng))
+        self.assertIn("Not a problem", items)
+        other = sc.read_dtcs({"req": "7B0"})
+        self.assertFalse(other.get("obd_checked"))
+        self.assertNotIn("OBD-II", other["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
