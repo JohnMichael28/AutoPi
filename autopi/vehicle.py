@@ -113,8 +113,12 @@ class Vehicle:
     FAST_SEQUENCE = ["RPM", "THROTTLE_POS", "RPM", "SPEED"]
 
     def __init__(self, port="/dev/pts/2", vin="TEST_OUTBACK", fast=False,
-                 timeout=1.0):
+                 timeout=1.0, protocol=None):
         self.__port = port          # private
+        # Known OBD protocol (e.g. "6" = CAN 11-bit 500k, every 2008+ US car)
+        # skips the adapter's protocol auto-search on every start. If it
+        # doesn't connect, connect() falls back to auto-search.
+        self.__protocol = str(protocol) if protocol else None
         self.__fast_mode = bool(fast)    # python-OBD fast mode (see connect)
         self.__timeout = timeout
         self.vin = vin
@@ -150,10 +154,13 @@ class Vehicle:
         # a wedged query FAILS FAST (returns None) instead of freezing the UI.
         import time as _t
         for attempt in range(5):
+            # First two tries use the known protocol (fast); then auto-search.
+            protocol = self.__protocol if attempt < 2 else None
             try:
                 self.__connection = obd.OBD(self.__port, fast=self.__fast_mode,
                                             timeout=self.__timeout,
-                                            check_voltage=False)
+                                            check_voltage=False,
+                                            protocol=protocol)
                 if self.__connection.is_connected():
                     return self.__connection.status()
             except Exception:

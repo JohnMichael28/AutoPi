@@ -38,13 +38,26 @@ class AnomalyFeed:
     WARMING_FEATURES = ["coolant_temp", "coolant_avg5", "coolant_d"]
 
     def __init__(self, model_path="models/anomaly_model.joblib", ignore=None,
-                 warm_coolant_c=85.0, warm_run_min=10.0):
-        self._det = AnomalyDetector(model_path, ignore=ignore) \
-            if AnomalyDetector else None
+                 warm_coolant_c=85.0, warm_run_min=10.0, lazy=False):
+        # lazy=True: don't load the model (scikit-learn unpickle = seconds on a
+        # Pi) until load() is called - AutoPi does that in the background
+        # after the face is up, so start-up isn't held by it.
+        self._path = model_path
+        self._ignore = ignore
+        self._det = None
+        self._pending = bool(lazy)
+        if not lazy:
+            self.load()
         self._warm_coolant_c = warm_coolant_c
         self._warm_run_min = warm_run_min
         self._buf = deque(maxlen=11)      # last 11 rows for avg5 + lag10
         self._last = {}                   # last seen value per key (forward-fill)
+
+    def load(self):
+        self._det = AnomalyDetector(self._path, ignore=self._ignore) \
+            if AnomalyDetector else None
+        self._pending = False
+        return self.status()
 
     def available(self):
         return self._det is not None and getattr(self._det, "ok", False)
@@ -52,6 +65,8 @@ class AnomalyFeed:
     def status(self):
         """{loaded, reason} for the WARNINGS tab - so a missing model is
         visible instead of silently showing nothing."""
+        if self._pending:
+            return {"loaded": False, "reason": "loading in the background..."}
         if self._det is None:
             return {"loaded": False,
                     "reason": "anomaly module failed to import (numpy missing?)"}

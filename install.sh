@@ -60,6 +60,8 @@ SMART_FILE="$(setting smart_model_file 'Qwen_Qwen3-1.7B-Q4_K_M.gguf')"
 SMART_URL="$(setting smart_model_url 'https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q4_K_M.gguf')"
 SMART_ARGS="$(setting smart_llama_args '-t 3 -c 2048 --host 127.0.0.1 --port 8081')"
 SMART_MIN_RAM="$(setting smart_min_ram_mb '3500')"
+FAST_BOOT_DISABLE="$(setting fast_boot_disable 'NetworkManager-wait-online.service ModemManager.service cups.service cups-browsed.service apt-daily.timer apt-daily-upgrade.timer man-db.timer')"
+SMART_DELAY="$(setting smart_start_delay_s '40')"
 VOSK_DIR="$(setting vosk_dir 'vosk-model-small-en-us-0.15')"
 VOSK_URL="$(setting vosk_url 'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip')"
 
@@ -259,6 +261,42 @@ else
         warn "could not move system logs to RAM"
     fi
     rm -f "$TMP"
+fi
+
+# ---- 10b. FAST BOOT: get to the face sooner ---------------------------------
+# AutoPi is an appliance in a car: no printer, no modem, usually no WiFi.
+# These services only slow the start (network-wait can hang up to a minute
+# when the car has no WiFi). The AI servers get low priority + the smart one
+# starts a bit later, so they never hold up the screen or the OBD link.
+say "10b/12 fast boot"
+FAST_BOOT="$(setting fast_boot 'True')"
+if [ "$FAST_BOOT" != "True" ] && [ "$FAST_BOOT" != "true" ]; then
+    ok "fast boot off in config"
+else
+    for svc in $FAST_BOOT_DISABLE; do
+        if systemctl list-unit-files "$svc" >/dev/null 2>&1 \
+           && systemctl is-enabled "$svc" >/dev/null 2>&1; then
+            if run sudo systemctl disable --now "$svc"; then
+                ok "disabled $svc"
+            else
+                warn "could not disable $svc"
+            fi
+        fi
+    done
+    if [ -d /etc/cloud ] && [ ! -f /etc/cloud/cloud-init.disabled ]; then
+        run sudo touch /etc/cloud/cloud-init.disabled && ok "cloud-init off (first-boot setup is done)"
+    fi
+    TMP="$(mktemp)"
+    printf '[Service]\nNice=10\nIOSchedulingClass=idle\n' >"$TMP"
+    run sudo mkdir -p /etc/systemd/system/llama-server.service.d
+    run sudo install -m 644 "$TMP" /etc/systemd/system/llama-server.service.d/autopi-priority.conf
+    printf '[Service]\nNice=15\nIOSchedulingClass=idle\nExecStartPre=/bin/sleep %s\n' "$SMART_DELAY" >"$TMP"
+    run sudo mkdir -p /etc/systemd/system/llama-server-smart.service.d
+    run sudo install -m 644 "$TMP" /etc/systemd/system/llama-server-smart.service.d/autopi-priority.conf
+    rm -f "$TMP"
+    run sudo systemctl daemon-reload
+    ok "AI servers: low priority; smart model starts ${SMART_DELAY}s after boot"
+    [ "$DRY" = "1" ] || systemd-analyze 2>/dev/null | head -1 | tee -a "$LOG"
 fi
 
 # ---- 11. start AutoPi on the screen at boot ----------------------------------

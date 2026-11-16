@@ -172,7 +172,8 @@
     "fast_lane": true,
     "fast_lane_gap_s": 0.005,
     "snapshot_interval_s": 0.15,
-    "ml_row_interval_s": 1.2
+    "ml_row_interval_s": 1.2,
+    "obd_protocol": "6"
   },
   "issue_guide": {
     "persist_s": 8,
@@ -390,6 +391,14 @@
     "smart_model_file": "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
     "smart_model_url": "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q4_K_M.gguf",
     "smart_llama_args": "-t 3 -c 2048 --host 127.0.0.1 --port 8081",
-    "smart_min_ram_mb": 3500
+    "smart_min_ram_mb": 3500,
+    "fast_boot": true,
+    "fast_boot_disable": "NetworkManager-wait-online.service ModemManager.service cups.service cups-browsed.service apt-daily.timer apt-daily-upgrade.timer man-db.timer",
+    "smart_start_delay_s": 40
+  },
+  "boot": {
+    "hold_s": 0.8,
+    "problem_hold_s": 2.0,
+    "ai_wait_s": 180
   }
 }

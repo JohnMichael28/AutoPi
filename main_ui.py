@@ -16,7 +16,8 @@ if __name__ == "__main__":
     # If reads ever hang again on an older ELM327 clone, set obd_fast false.
     vehicle = Vehicle(port=config.obd_port,
                       fast=poll.get("obd_fast", True),
-                      timeout=poll.get("obd_timeout_s", 1.0))
+                      timeout=poll.get("obd_timeout_s", 1.0),
+                      protocol=poll.get("obd_protocol"))
 
     print("Connecting to vehicle...")
     print("Status:", vehicle.connect())

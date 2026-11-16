@@ -38,13 +38,20 @@ TAGS = {"ok": ("[ OK ]", GREEN), "warn": ("[WARN]", ATTENTION),
 
 class BootLoader:
     def __init__(self, width, height, steps, title="AUTOPI GUARDIAN TERMINAL",
-                 version="v2.0", hold_s=1.5):
+                 version="v2.0", hold_s=1.5, later=None, problem_hold_s=2.0):
         self.width = width
         self.height = height
         self.title = title
         self.version = version
         self.hold_s = hold_s
+        self.problem_hold_s = problem_hold_s
         self.done = False
+        # LATER steps = heavy loads you don't need to drive off (AI models,
+        # ML, voice). They run on the same thread right AFTER the boot
+        # screen finishes, while the face is already up.
+        self._later = [{"label": label, "fn": fn, "state": "wait", "detail": "",
+                        "secs": 0.0} for label, fn in (later or [])]
+        self.later_running = bool(self._later)
         self._rows = [{"label": label, "fn": fn, "state": "wait", "detail": "",
                        "secs": 0.0} for label, fn in steps]
         self._current = 0
@@ -72,18 +79,44 @@ class BootLoader:
             row["state"] = state if state in TAGS else "warn"
             row["detail"] = str(detail)
         self._current = len(self._rows)
-        self._write_log()
         self._finished = True
+        self._write_log("main")
+        for row in self._later:                 # face is up; load the rest
+            row["state"] = "run"
+            t0 = time.monotonic()
+            try:
+                state, detail = row["fn"]()
+            except Exception as err:
+                state, detail = "fail", str(err)[:60]
+            row["secs"] = time.monotonic() - t0
+            row["state"] = state if state in TAGS else "warn"
+            row["detail"] = str(detail)
+        self.later_running = False
+        self._write_log("later")
 
-    def _write_log(self):
+    def _write_log(self, part="main"):
+        """part="main": the boot-screen steps + when the face came up (written
+        the moment the face appears). part="later": the background loads,
+        appended when they finish."""
         try:
             import os
             os.makedirs("logs", exist_ok=True)
             with open(os.path.join("logs", "boot.log"), "a") as f:
-                f.write("=== boot " + time.strftime("%Y-%m-%d %H:%M:%S") + " ===\n")
-                for r in self._rows:
+                if part == "main":
+                    f.write("=== boot " + time.strftime("%Y-%m-%d %H:%M:%S") + " ===\n")
+                    rows = self._rows
+                else:
+                    rows = self._later
+                for r in rows:
                     f.write(r["state"].upper().ljust(5) + " " + r["label"] + " - "
                             + r["detail"] + " (" + str(round(r["secs"], 1)) + " s)\n")
+                if part == "main":
+                    f.write("--- face up " + str(round(time.monotonic() - self._start, 1))
+                            + " s after AutoPi started; loading in the background: ---\n")
+                else:
+                    f.write("--- background loads done "
+                            + str(round(time.monotonic() - self._start, 1))
+                            + " s after AutoPi started ---\n")
         except Exception:
             pass
 
@@ -93,6 +126,16 @@ class BootLoader:
     def results(self):
         return [(r["label"], r["state"], r["detail"]) for r in self._rows]
 
+    def later_results(self):
+        return [(r["label"], r["state"], r["detail"]) for r in self._later]
+
+    def later_status(self):
+        """Short line for the face while background loads run."""
+        for r in self._later:
+            if r["state"] == "run":
+                return "AutoPi AI warming up..."
+        return ""
+
     def update(self, dt):
         if self.done:
             return
@@ -100,7 +143,7 @@ class BootLoader:
             self._hold += dt
             problems = [r for r in self._rows if r["state"] in ("warn", "fail")]
             # Give you time to read what went wrong; a clean boot just goes.
-            if self._hold >= (self.hold_s + 3.0 if problems else self.hold_s):
+            if self._hold >= (self.hold_s + self.problem_hold_s if problems else self.hold_s):
                 self.done = True
 
     # ---- drawing --------------------------------------------------------

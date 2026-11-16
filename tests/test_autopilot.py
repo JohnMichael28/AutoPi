@@ -689,6 +689,41 @@ class BootLoaderTests(unittest.TestCase):
         states = [r[1] for r in b.results()]
         self.assertEqual(states, ["ok", "warn", "fail"])
 
+    def test_face_comes_up_before_heavy_loads_finish(self):
+        """Nov 15: AI warm-ups held the boot screen 1-2 minutes while the car
+        idled. Heavy loads now run AFTER the face is up."""
+        import threading
+        import time as _t
+        try:
+            import pygame
+            pygame.init()
+        except Exception:
+            self.skipTest("pygame not installed")
+        from autopi.boot_loader import BootLoader
+        gate = threading.Event()
+
+        def slow_ai():
+            gate.wait(5)                 # pretend the AI model is still loading
+            return "ok", "loaded"
+        b = BootLoader(800, 480, [("OBD", lambda: ("ok", ""))],
+                       later=[("AI MODEL", slow_ai)], hold_s=0.1)
+        for _ in range(100):
+            b.update(0.05)
+            if b.done:
+                break
+            _t.sleep(0.01)
+        self.assertTrue(b.done)                       # face is up...
+        self.assertTrue(b.later_running)              # ...while the AI still loads
+        self.assertIn("warming up", b.later_status())
+        gate.set()
+        for _ in range(100):
+            if not b.later_running:
+                break
+            _t.sleep(0.01)
+        self.assertFalse(b.later_running)
+        self.assertEqual(b.later_results(), [("AI MODEL", "ok", "loaded")])
+        self.assertEqual(b.later_status(), "")
+
 
 class ModuleScanTests(unittest.TestCase):
     """Fake CAN network: engine (no codes), ABS (one C code), a telematics
@@ -1406,6 +1441,17 @@ class TalkScrollTests(unittest.TestCase):
                        keep_scroll=True)
         ds.clamp_scroll()
         self.assertEqual(ds._scroll, 40 - ds._visible() - 3)   # stayed where you were
+
+
+class LazyMLTests(unittest.TestCase):
+    def test_ml_model_not_loaded_until_asked(self):
+        from autopi.anomaly_feed import AnomalyFeed
+        f = AnomalyFeed("models/definitely_missing.joblib", lazy=True)
+        self.assertIn("background", f.status()["reason"])
+        self.assertEqual(f.push({"rpm": 800})["available"], False)
+        st = f.load()
+        self.assertFalse(st["loaded"])
+        self.assertNotIn("background", st["reason"])
 
 
 if __name__ == "__main__":

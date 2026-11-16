@@ -98,7 +98,8 @@ class UI:
             acfg.get("model_path", "models/anomaly_model.joblib"),
             ignore=acfg.get("ignore_features", ["voltage", "voltage_d"]),
             warm_coolant_c=acfg.get("warm_coolant_c", 85.0),
-            warm_run_min=acfg.get("warm_run_min", 10.0))
+            warm_run_min=acfg.get("warm_run_min", 10.0),
+            lazy=True)                      # loaded in the background after boot
         self._anomaly_result = {"severity": "ok"}
         self._playbook = ActionPlaybook()     # "what to do" for every warning
         # All-module access (UDS): engine, CVT, ABS, airbag, body, DCM...
@@ -263,21 +264,25 @@ class UI:
         self._chat_keep_s = 300
         try:
             with open("config.json") as vf:
-                vcfg = json.load(vf).get("voice", {})
-            self._chat_keep_s = vcfg.get("chat_keep_s", 300)
-            from autopi.voice import VoiceInput
-            self._voice = VoiceInput(
-                vcfg.get("model_path", "vosk-model-small-en-us-0.15"),
-                device_name=vcfg.get("device_name"),
-                sample_rate=vcfg.get("sample_rate", 44100),
-                record_seconds=vcfg.get("record_seconds", 5))
-            print("Voice ready")
-        except Exception as err:
-            print("Voice unavailable:", err)
+                self._vcfg = json.load(vf).get("voice", {})
+        except Exception:
+            self._vcfg = {}
+        self._chat_keep_s = self._vcfg.get("chat_keep_s", 300)
+        # The voice model itself loads in the background after boot
+        # (_boot_voice) - the mic button appears when it's ready.
 
-        # Start-up screen: really loads + self-tests everything, once, on a
-        # background thread (created last, so every part already exists).
-        self.boot = BootLoader(width, height, self._boot_steps())
+        # Start-up screen: only what you need to drive off, then the face.
+        # Heavy loads (AI models, ML, voice) finish in the background.
+        try:
+            with open("config.json") as bf:
+                bcfg = json.load(bf).get("boot", {})
+        except Exception:
+            bcfg = {}
+        self._ai_wait_s = bcfg.get("ai_wait_s", 180)
+        self.boot = BootLoader(width, height, self._boot_steps(),
+                               later=self._boot_later_steps(),
+                               hold_s=bcfg.get("hold_s", 0.8),
+                               problem_hold_s=bcfg.get("problem_hold_s", 2.0))
 
     # ---- start-up steps (each returns (state, detail)) --------------------
     def _boot_steps(self):
@@ -290,14 +295,47 @@ class UI:
             ("SECURITY GUARD BOT", self._boot_security),
             ("JUDGE BOT", self._boot_judge),
             ("COPILOT AGENT", self._boot_copilot),
-            ("ML ANOMALY MONITOR", self._boot_ml),
             ("WARM-UP + ISSUE GUIDE", lambda: ("ok", "cold-start + where-to-look")),
             ("AUTO DYNO", lambda: ("ok", "records every hard pull")),
             ("HEALTH CHECK", lambda: ("ok", str(len(self._readers)) + " readers + live checks")),
             ("ALL-MODULE ACCESS (UDS)", self._boot_modules),
+        ]
+
+    def _boot_later_steps(self):
+        # Not needed to drive off - loaded AFTER the face is up (Nov 15: the
+        # AI warm-ups held the boot screen for over a minute while the car
+        # sat idling). Results still go to logs/boot.log.
+        return [
+            ("ML ANOMALY MONITOR", self._boot_ml),
+            ("VOICE INPUT", self._boot_voice),
             ("AUTOPI AI MODEL (LOCAL ONLY)", self._boot_local_ai),
             ("AUTOPI SMART AI (TALK)", self._boot_smart_ai),
         ]
+
+    def _wait_until(self, check):
+        """Poll check() until True or boot.ai_wait_s runs out (background only)."""
+        end = time.monotonic() + self._ai_wait_s
+        while True:
+            try:
+                if check():
+                    return True
+            except Exception:
+                pass
+            if time.monotonic() >= end:
+                return False
+            time.sleep(3.0)
+
+    def _boot_voice(self):
+        try:
+            from autopi.voice import VoiceInput
+            self._voice = VoiceInput(
+                self._vcfg.get("model_path", "vosk-model-small-en-us-0.15"),
+                device_name=self._vcfg.get("device_name"),
+                sample_rate=self._vcfg.get("sample_rate", 44100),
+                record_seconds=self._vcfg.get("record_seconds", 5))
+        except Exception as err:
+            return "warn", "voice unavailable: " + str(err)[:40]
+        return "ok", "mic + offline speech ready"
 
     def _boot_storage(self):
         summary = self._storage.run()
@@ -362,7 +400,7 @@ class UI:
         return "ok", str(len(self._ai_stack.registry.catalog("service"))) + " tools, budgets + FSM"
 
     def _boot_ml(self):
-        st = self._anomaly.status()
+        st = self._anomaly.load()
         if not st.get("loaded"):
             return "warn", "OFF: " + st.get("reason", "")[:30]
         return "ok", st.get("reason", "loaded")[:34]
@@ -381,10 +419,9 @@ class UI:
         # boot is then answered much faster.
         if self._ai_client is None:
             return "warn", "no AI client"
-        try:
-            if not self._ai_client.local_reachable():
-                return "fail", "AutoPi AI not running: sudo systemctl restart llama-server"
-        except Exception:
+        # Runs in the background now, so it can wait for llama-server to
+        # finish loading its model after power-on instead of failing.
+        if not self._wait_until(self._ai_client.local_reachable):
             return "fail", "AutoPi AI not running: sudo systemctl restart llama-server"
         t0 = time.monotonic()
         ans = self._ai_client.ask("Reply with exactly: READY")
@@ -402,7 +439,7 @@ class UI:
         llm = self._ai_stack.llm
         if "smart" not in llm.tier_names():
             return "ok", "off in config - TALK uses the fast model"
-        if not llm.reachable("smart"):
+        if not self._wait_until(lambda: llm.reachable("smart")):
             return "warn", "not installed/running - TALK uses the fast model"
         t0 = time.monotonic()
         try:
@@ -2298,6 +2335,12 @@ class UI:
                 hint = pygame.font.SysFont("consolas", 16).render(
                     "TAP to open menu", True, (90, 90, 100))
                 surface.blit(hint, (10, 462))
+            # Background loads still running (AI models, voice): one small
+            # dim line, top-right, so you know TALK isn't ready yet.
+            later = self.boot.later_status() if self.boot.later_running else ""
+            if later:
+                lt = pygame.font.SysFont("consolas", 14).render(later, True, (90, 110, 100))
+                surface.blit(lt, (self.width - lt.get_width() - 10, 76))
 
     def _draw_waiting(self, surface, title, message):
         # Styled "waiting for data" placeholder screen.

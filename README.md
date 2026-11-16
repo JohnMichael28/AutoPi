@@ -311,6 +311,26 @@ the first two from the laptop after installing (the script prints the exact
 `scp` lines), then `sudo reboot`. Without the model the ML monitor stays off
 until you retrain; the module list rebuilds with DIAGNOSTICS > FIND MODULES.
 
+### Fast start (ready to drive in seconds)
+
+- The boot screen only waits for what you need to drive off: SD cleanup, the
+  OBD-II link, the live-data fast lane, guardrail self-tests, warm-up and
+  module access - a few seconds. Then the face comes up.
+- The heavy parts load **in the background while you drive**: the ML model,
+  the voice model, and both AutoPi AI models (they wait for their servers to
+  finish loading instead of failing). A small "AutoPi AI warming up..." note
+  sits top-right on the face until they're ready; the mic button appears when
+  voice is ready. Everything is still logged to `logs/boot.log`.
+- The OBD link uses the car's known protocol (`poll.obd_protocol`, "6" = CAN
+  11-bit 500k) instead of auto-searching every start, with an automatic
+  fallback to auto-search.
+- `install.sh` (step 10b) turns off services an in-car appliance doesn't need
+  (`NetworkManager-wait-online` - can hang up to a minute with no WiFi -
+  ModemManager, printing, apt timers, cloud-init after first boot), gives the
+  AI servers low CPU/disk priority, and starts the smart model 40 s after
+  power-on so it never competes with the start. All in the `install` block of
+  `config.json`. Check the OS part with `systemd-analyze blame`.
+
 ### SD-card care (automatic)
 
 - At every boot the storage keeper (`autopi/storage_keeper.py`, shown as
