@@ -12,6 +12,13 @@
 Budgets (Topic 6B) are enforced by code, in this order: deadline, model
 turns, tool calls. The model never decides when to stop.
 
+FAST PATH (Nov 15): code already fetched the right data for the question
+(route_first), so the model gets ONE short call: a compact prompt, the data,
+the question, "answer in plain words" - no tool catalog, no JSON, /no_think.
+The full agent loop (~1,700 tokens of prompt, 2+ calls) was too slow for the
+on-device model and timed out. The judge still checks the answer against the
+data; one rewrite, then the data is shown instead.
+
 If the model is busy or slow, the copilot KEEPS TRYING (offline_retries,
 retry_wait_s) and reports each try through on_status, so the driver never
 has to ask again. Only after the last try does it fall back to keyword
@@ -26,7 +33,7 @@ result, and keyword routing falls back to the previous question's topic.
 import json
 import time
 
-from autopi.guardrails import fence, parse_json_reply
+from autopi.guardrails import fence, parse_json_reply, tidy_answer
 from autopi.llm_client import LLMUnavailable
 from autopi.tools import ToolError
 
@@ -106,7 +113,7 @@ class Copilot:
                  max_turns=5, max_tool_calls=3, deadline_s=45.0,
                  max_rewrites=1, tool_result_chars=1500, route_first=True,
                  offline_retries=3, retry_wait_s=5.0, history_turns=3,
-                 sleep=time.sleep):
+                 sleep=time.sleep, fast_answer=True, fast_max_tokens=140):
         self._llm = llm
         self._tools = registry
         self._prompts = prompts
@@ -126,6 +133,8 @@ class Copilot:
         self._retry_wait = retry_wait_s
         self._history_turns = history_turns
         self._sleep = sleep
+        self._fast = fast_answer
+        self._fast_tokens = fast_max_tokens
 
     # ------------------------------------------------------------------
     def ask(self, question, profile="driving", history=None, on_status=None,
@@ -195,6 +204,10 @@ class Copilot:
                         "if it is enough; call another tool only if needed."})
             except Exception as err:
                 step("TOOL", "pre-route " + name + " failed: " + str(err)[:60])
+            if self._fast and evidence:
+                return self._fast_path(question, history, evidence, trace, incidents,
+                                       profile, step, incident, on_status,
+                                       still_wanted, t0)
         while True:
             # ---- budgets, checked by code, in order ----
             if still_wanted is not None and not still_wanted():
@@ -224,7 +237,7 @@ class Copilot:
                 why = "busy" if "busy" in str(err) or "timed out" in str(err).lower() \
                     else "not answering"
                 if on_status is not None:
-                    on_status("Pi AI " + why + " - trying again ("
+                    on_status("AutoPi AI " + why + " - trying again ("
                               + str(offline_tries) + " of "
                               + str(self._offline_retries) + ")...")
                 self._sleep(self._retry_wait)
@@ -309,6 +322,82 @@ class Copilot:
                 "AutoPi: reply must contain either \"tool\" or \"answer\"."})
 
     # ------------------------------------------------------------------
+    def _fast_path(self, question, history, evidence, trace, incidents, profile,
+                   step, incident, on_status, still_wanted, t0):
+        """One short model call: compact prompt + the data code fetched."""
+        system = self._prompts.system("copilot_fast", security="security_short")
+        data = "\n".join(evidence)
+        parts = []
+        if history:
+            past = "\n".join("Driver: " + str(q)[:160] + "\nAutoPi: " + str(a)[:220]
+                             for q, a in history)
+            hits = self._scan.scan(past)
+            if hits:
+                incident("history", "instruction-like text in conversation history", hits)
+            else:
+                parts.append(fence("CONVERSATION SO FAR", past, 900))
+        parts.append(fence("DATA", data, self._tool_chars))
+        parts.append("DRIVER: " + question.replace("<<", "< <"))
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": "\n\n".join(parts)}]
+        tier = None
+        tries = 0
+        rewrites = 0
+        waited = 0.0
+        while True:
+            if still_wanted is not None and not still_wanted():
+                step("STOPPED", "driver left")
+                return self._fallback("cancelled", question, evidence, trace,
+                                      incidents, tier, profile, history)
+            if time.time() - t0 - waited >= self._deadline_s:
+                step("STOPPED", "deadline")
+                return self._fallback("deadline", question, evidence, trace,
+                                      incidents, tier, profile, history)
+            t_call = time.time()
+            try:
+                text, tier = self._llm.chat(messages, max_tokens=self._fast_tokens,
+                                            temperature=0.2)
+            except LLMUnavailable as err:
+                step("OFFLINE", err)
+                tries += 1
+                if tries > self._offline_retries or \
+                        (still_wanted is not None and not still_wanted()):
+                    return self._fallback("offline", question, evidence, trace,
+                                          incidents, tier, profile, history)
+                why = "busy" if ("busy" in str(err) or "timed out" in str(err).lower()) \
+                    else "not answering"
+                if on_status is not None:
+                    on_status("AutoPi AI " + why + " - trying again ("
+                              + str(tries) + " of " + str(self._offline_retries) + ")...")
+                self._sleep(self._retry_wait)
+                waited += time.time() - t_call
+                continue
+            answer = tidy_answer(text)
+            obj, _err = parse_json_reply(answer)       # tolerate a JSON reply anyway
+            if isinstance(obj, dict) and obj.get("answer"):
+                answer = str(obj["answer"]).strip()
+            step("ANSWER", answer)
+            if self._scan.scan(answer):
+                incident("model", "instruction-like text in answer", self._scan.scan(answer))
+                return self._fallback("unverified", question, evidence, trace,
+                                      incidents, tier, profile, history)
+            verdict = self._judge.review(question, data, answer)
+            step("REVIEW", verdict)
+            if getattr(verdict, "security_flag", None):
+                incident("judge", "judge flagged answer", verdict.security_flag)
+            if verdict.ok:
+                step("DONE", answer)
+                return CopilotResult("done", answer, evidence, trace, incidents, tier)
+            if rewrites >= self._max_rewrites:
+                step("STOPPED", "judge veto")
+                return self._fallback("unverified", question, evidence, trace,
+                                      incidents, tier, profile, history)
+            rewrites += 1
+            messages = messages + [
+                {"role": "assistant", "content": answer[:400]},
+                {"role": "user", "content": "AutoPi REVIEW rejected that: "
+                 + "; ".join(verdict.reasons) + ". Answer again using only the DATA."}]
+
     def _match(self, text):
         q = " " + str(text).lower() + " "
         for words, tool, args in self.ROUTES:
@@ -342,7 +431,7 @@ class Copilot:
                 evidence.append(tool + ": unavailable (" + str(err)[:60] + ")")
         tries = str(self._offline_retries + 1)
         headline = {
-            "offline": "The Pi AI didn't answer after " + tries + " tries (busy or not "
+            "offline": "The AutoPi AI didn't answer after " + tries + " tries (busy or not "
                        "running). Here's what the car data says - tap ASK AGAIN to retry:",
             "deadline": "The AI ran out of time. Here's the data it gathered "
                         "- tap ASK AGAIN to retry:",

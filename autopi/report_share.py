@@ -10,14 +10,14 @@ Three ways, so it works for anyone, anywhere, with no setup on the phone:
                     shows the text. Works with no WiFi at all.
 
 ReportServer  a tiny read-only web server that serves ONLY the reports/
-              folder, on the Pi's own network address. Scan the QR code on
+              folder, on AutoPi's own network address. Scan the QR code on
               the screen with your phone camera -> the report opens in the
               browser -> Share / Print / Save as PDF -> text or email it to
               the mechanic. Guardrails: serves nothing outside reports/, no
               directory listing, read-only (GET/HEAD only), and it shuts
               itself off after `lifetime_s` (default 15 min).
               The phone must be on the same network as the Pi (home WiFi or
-              the phone's hotspot that the Pi joins in the car).
+              the phone's hotspot that AutoPi joins in the car).
 copy_to_usb() copies the files to every USB stick mounted under /media.
 qr_matrix()   the QR code as a list of rows of booleans (needs the `qrcode`
               package: pip install qrcode). None if it isn't installed.

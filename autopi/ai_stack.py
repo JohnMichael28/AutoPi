@@ -21,7 +21,7 @@ DEFAULTS = {
     # no network - AutoPi must work fully anywhere the car goes.
     "tiers": [
         {"name": "pi", "base_url": "http://127.0.0.1:8080",
-         "model": "qwen3-0.6b", "timeout_s": 45},
+         "model": "qwen3-0.6b", "timeout_s": 90},
     ],
     "retry_after_s": 5,
     "profiles": {"driving": {"allow": ["read"]},
@@ -35,6 +35,10 @@ DEFAULTS = {
     "retry_wait_s": 5,
     # Follow-up questions: how many earlier Q/A turns the model sees.
     "history_turns": 3,
+    # One short model call with the data code already fetched (fast enough
+    # for the on-device model). False = the full multi-call agent loop.
+    "fast_answer": True,
+    "fast_max_tokens": 140,
     "max_answer_chars": 600,
     "route_first": True,
     # The code judge always runs. A second model as judge would double the
@@ -73,7 +77,9 @@ class AIStack:
                                route_first=cfg.get("route_first", True),
                                offline_retries=cfg.get("offline_retries", 3),
                                retry_wait_s=cfg.get("retry_wait_s", 5),
-                               history_turns=cfg.get("history_turns", 3))
+                               history_turns=cfg.get("history_turns", 3),
+                               fast_answer=cfg.get("fast_answer", True),
+                               fast_max_tokens=cfg.get("fast_max_tokens", 140))
 
     @classmethod
     def from_config(cls, snapshot_fn, vehicle=None, dyno_fn=None,

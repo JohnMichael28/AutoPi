@@ -53,7 +53,7 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
   check (including every module's codes), freeze frame, live snapshot, this
   drive's warnings and the last dyno pull. Tap **SEND TO PHONE** and pick how
   to hand it over — works for any phone, no internet needed:
-  - **AUTOPI WIFI** (default) — the Pi makes its own password-protected WiFi
+  - **AUTOPI WIFI** (default) — AutoPi makes its own password-protected WiFi
     (a new random password every time). QR 1 joins it, QR 2 opens the report.
     Your previous WiFi comes back when you tap DONE (or after 15 minutes).
   - **SAME WIFI** — phone and Pi already on the same network; one QR opens it.
@@ -78,10 +78,14 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
   model about your car's live data. Ask follow-ups (**ASK FOLLOW-UP**): the last
   3 questions and answers go along, so "is that bad?" makes sense. "How is my car
   doing?" pulls a full overview — live values, engine codes, AutoPi's warnings,
-  the ML monitor, warm-up and the last all-module scan. If the Pi model is busy it
+  the ML monitor, warm-up and the last all-module scan. If the AutoPi AI is busy it
   keeps trying (3 retries, shown on screen) before showing the plain-English data;
-  **ASK AGAIN** retries, **DONE** ends the conversation. Fully offline speech
-  recognition (Vosk) + fully offline answers (local SLM).
+  **ASK AGAIN** retries, **DONE** ends the conversation. Listening, hearing and
+  thinking all show on the one TALK TO AUTOPI screen. Answers are ONE short call
+  to the AutoPi AI: code fetches the right car data first, then a compact prompt
+  (~600 tokens, `/no_think`, prompt cache) asks for 2-3 plain sentences, and the
+  judge checks every number against the data. Fully offline speech recognition
+  (Vosk) + fully offline answers (local SLM).
 - **ML anomaly detection** — a trained, context-aware Isolation Forest runs
   on-device and flags readings that deviate from your car's learned normal.
 
@@ -101,16 +105,16 @@ and a low temperature for steady answers. It runs as a `systemd` service pinned
 to 3 of the Pi's 4 cores (`taskset`) so it can never starve the real-time UI,
 and auto-starts on boot.
 
-**Tier 2 — Offline dictionary + playbook.** If the Pi model service is down,
+**Tier 2 — Offline dictionary + playbook.** If the AutoPi AI service is down,
 codes still get built-in plain-English descriptions and every warning still
 gets its rule-based "what to do" steps.
 
 **Local only, by design.** AutoPi never waits on a laptop or any network: the
-copilot, the explainer and every screen use only the model on the Pi. The
+copilot, the explainer and every screen use only the AI on AutoPi itself. The
 copilot also runs the obvious tool for your question in code *before* the
 first model turn, so the small model can usually answer in a single turn.
 
-**Responsive by design.** AI questions are serialized (the Pi model answers one
+**Responsive by design.** AI questions are serialized (the AutoPi AI answers one
 at a time; screens and the voice copilot share one gate, so they queue instead
 of timing each other out), identical questions share one answer, answers are cached for 10
 minutes, a stopped model service is reported instantly (not after a timeout), and
@@ -205,10 +209,10 @@ pinned to its baseline and never judged (see limitations).
   **priority** (live polling pauses) so codes and monitors come back quickly.
 - **Real start-up loader** — the boot screen actually loads and self-tests
   everything once (OBD link, fast lane, security guard and judge self-tests,
-  copilot, ML model, and a warm-up question to the on-Pi model so the first
+  copilot, ML model, and a warm-up question to the AutoPi AI so the first
   real answer is fast). It shows one status line, a progress bar and only the
   problems; the full log goes to `logs/boot.log`.
-- **Local-only AI** — the on-Pi SLM, with the offline dictionary and playbook
+- **Local-only AI** — the AutoPi AI (local SLM), with the offline dictionary and playbook
   as a floor. The device never pretends to have data it
   doesn't.
 - **Resource isolation** — the SLM is pinned to 3 cores so inference can't
@@ -257,7 +261,7 @@ produced a stable live connection.
   themselves; some may not answer a non-dealer tool. Service functions that
   need dealer security access (calibrations, relearns, programming) stay out
   of scope — AutoPi only reads codes and, with confirmation, clears them.
-- **AutoPi WiFi sharing uses the Pi's WiFi radio.** While sharing, the Pi is
+- **AutoPi WiFi sharing uses AutoPi's WiFi radio.** While sharing, AutoPi is
   off your home WiFi; it reconnects when you tap DONE. If the share screen
   says "Not authorized", let the app run `nmcli` without a password:
   `sudo visudo -f /etc/sudoers.d/autopi-nmcli` and add

@@ -41,9 +41,16 @@ class LLMClient:
         return headers
 
     def _post(self, tier, messages, max_tokens, temperature):
+        # Qwen3 "thinks" out loud before answering unless told /no_think -
+        # hundreds of hidden tokens on a Pi = timeouts. And cache_prompt lets
+        # llama-server reuse the already-read system prompt between calls.
+        if tier.get("no_think", True) and messages and messages[-1]["role"] == "user":
+            messages = messages[:-1] + [{"role": "user",
+                                         "content": messages[-1]["content"] + " /no_think"}]
         payload = {"model": tier["model"], "messages": messages,
                    "max_tokens": max_tokens, "temperature": temperature,
-                   "stream": False}
+                   "stream": False,
+                   "cache_prompt": tier.get("cache_prompt", True)}
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(self._endpoint(tier), data=data,
                                      headers=self._headers(), method="POST")
@@ -68,7 +75,7 @@ class LLMClient:
                 continue
             # Wait our turn for the Pi model (a screen may be using it).
             if not LOCAL_MODEL_LOCK.acquire(timeout=tier.get("timeout_s", 30)):
-                errors.append(name + ": busy (another screen is using the Pi AI)")
+                errors.append(name + ": busy (AutoPi AI is answering another screen)")
                 continue
             try:
                 text = self._post(tier, messages, max_tokens, temperature)

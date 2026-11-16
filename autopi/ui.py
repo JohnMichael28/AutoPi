@@ -294,7 +294,7 @@ class UI:
             ("AUTO DYNO", lambda: ("ok", "records every hard pull")),
             ("HEALTH CHECK", lambda: ("ok", str(len(self._readers)) + " readers + live checks")),
             ("ALL-MODULE ACCESS (UDS)", self._boot_modules),
-            ("PI AI MODEL (LOCAL ONLY)", self._boot_local_ai),
+            ("AUTOPI AI MODEL (LOCAL ONLY)", self._boot_local_ai),
         ]
 
     def _boot_storage(self):
@@ -381,9 +381,9 @@ class UI:
             return "warn", "no AI client"
         try:
             if not self._ai_client.local_reachable():
-                return "fail", "Pi AI not running: sudo systemctl restart llama-server"
+                return "fail", "AutoPi AI not running: sudo systemctl restart llama-server"
         except Exception:
-            return "fail", "Pi AI not running: sudo systemctl restart llama-server"
+            return "fail", "AutoPi AI not running: sudo systemctl restart llama-server"
         t0 = time.monotonic()
         ans = self._ai_client.ask("Reply with exactly: READY")
         secs = str(round(time.monotonic() - t0, 1))
@@ -579,11 +579,6 @@ class UI:
                 self.terminal.selected = self._graph_page
         elif self.state in ("waiting", "engineer", "tuning"):
             self.state = "menu"
-        elif self.state == "voice":
-            # Tap while listening = cancel; back to the conversation if one is open.
-            self.state = "voiceanswer" if self._chat else "face"
-            if self._chat:
-                self._render_chat()
         elif self.state == "voiceanswer":
             if y >= self.height - 44:
                 slot = int(x // (self.width / 3))
@@ -601,8 +596,7 @@ class UI:
             elif self._voice is not None and y >= self.height - 70 and x <= 200:
                 if time.monotonic() - self._chat_last > self._chat_keep_s:
                     self._chat = []           # long pause = new conversation
-                self._voice.start_listening()
-                self.state = "voice"
+                self._chat_listen()
             elif (getattr(self.data, "mode", "") == "track"
                   and hasattr(self.data, "get_dyno_info")
                   and self.data.get_dyno_info() is not None):
@@ -1222,9 +1216,9 @@ class UI:
             for chunk in self._wrap_line("OFF: " + status.get("reason", "unknown"), 42):
                 body.append(chunk)
             body.append("   DO 1: copy models/anomaly_model.joblib")
-            body.append("         to ~/autopi-project/models/ on the Pi")
+            body.append("         to ~/autopi-project/models/ on AutoPi")
             body.append("   DO 2: pip install scikit-learn joblib")
-            body.append("         (inside the Pi venv)")
+            body.append("         (inside the AutoPi venv)")
         elif not ml.get("available"):
             body.append("ON - waiting for engine data (start car)")
         else:
@@ -1720,7 +1714,7 @@ class UI:
                                          ("(codes + verdict + AI)", dim)]):
                 surface.blit(font.render(t, True, c), (400, 80 + i * 24))
         elif mode == "text":
-            surface.blit(font.render("Install 'qrcode' on the Pi for QR codes.", True, yellow), (24, 70))
+            surface.blit(font.render("Install 'qrcode' on AutoPi for QR codes.", True, yellow), (24, 70))
 
         usb = info.get("usb")
         foot = ("USB: copied to " + usb[0][-30:]) if usb else "USB: no stick plugged in"
@@ -1776,7 +1770,7 @@ class UI:
             context = context + "No trouble codes. "
         try:
             answer = self._ai_client.ask(
-                "You are a car diagnostic assistant. The driver's spoken "
+                "You are AutoPi, an in-car diagnostic assistant. The driver's spoken "
                 "question was transcribed by imperfect speech recognition and "
                 "may have misheard words ('gods'='codes', 'red'='read'). "
                 "Interpret what they meant. " + context
@@ -1791,17 +1785,6 @@ class UI:
             lines.extend(self._wrap_line(chunk, 60))
         return lines
 
-    def _draw_voice_listening(self, surface):
-        surface.fill((8, 14, 8))
-        status = self._voice.status() if self._voice is not None else "idle"
-        label = "LISTENING..." if status == "listening" else "THINKING..."
-        f = pygame.font.SysFont("consolas", 32, bold=True)
-        t = f.render(label, True, (65, 255, 120))
-        surface.blit(t, (self.width//2 - t.get_width()//2, 200))
-        hint = pygame.font.SysFont("consolas", 16).render(
-            "Speak your question", True, (120, 120, 130))
-        surface.blit(hint, (self.width//2 - hint.get_width()//2, 260))    
-            
     def _demo_talk(self):
         self.speech.say("P0301: CYLINDER 1 MISFIRE",
             "Your engine has an irregular firing in cylinder one. This usually "
@@ -1863,10 +1846,18 @@ class UI:
 
         # Voice: when transcription finishes, answer on a background thread
         # (the Pi model takes a while - the screen must never freeze on it).
-        if self.state == "voice" and self._voice is not None:
+        if self._voice is not None:
+            hearing = [t for t in self._chat if t.get("hearing")]
             text = self._voice.poll_result()
-            if text is not None:
-                self._start_voice_answer(text)
+            if hearing:
+                turn = hearing[-1]
+                if text is not None:
+                    self._heard(turn, text)
+                elif (self._voice.status() != "listening"
+                      and turn["status"].startswith("LISTENING")):
+                    turn["status"] = "Got it - working out what you said..."
+                    if self.state == "voiceanswer":
+                        self._render_chat()
 
         if self.state == "boot":
             self.boot.update(dt)
@@ -1954,20 +1945,42 @@ class UI:
         for n, turn in enumerate(self._chat):
             if n:
                 items.append(("", "raw"))
-            items.append(("YOU: " + turn["q"], "raw"))
+            if not turn.get("hearing"):
+                items.append(("YOU: " + turn["q"], "raw"))
             if turn["busy"]:
-                items.append((turn.get("status") or "AutoPi is thinking (on this Pi)...", "dim"))
+                items.append((turn.get("status") or "AutoPi is thinking...",
+                              "ai" if turn.get("hearing") else "dim"))
             for line in turn["lines"]:
                 kind = "raw" if line.startswith("  ") or line == "Evidence:" else "ai"
                 items.append((line, kind))
-        items.append(("", "raw"))
-        items.append(("Tap ASK FOLLOW-UP to keep talking.", "dim"))
+        if not any(t["busy"] for t in self._chat):
+            items.append(("", "raw"))
+            items.append(("Tap ASK FOLLOW-UP to keep talking.", "dim"))
         token = self.diag_screen.set_colored("TALK TO AUTOPI", items)
         self.diag_screen.bottom_reserve = 44
         self.diag_screen.scroll_by(10000)      # newest at the bottom
         return token
 
+    def _chat_listen(self):
+        """Listening, hearing and thinking all happen on the ONE conversation
+        screen (no separate LISTENING / THINKING screen)."""
+        self.state = "voiceanswer"
+        self._chat_last = time.monotonic()
+        self._chat.append({"q": "...", "lines": [], "answer": "", "busy": True,
+                           "hearing": True,
+                           "status": "LISTENING... ask your question now"})
+        self._voice.start_listening()
+        self._render_chat()
+
+    def _heard(self, turn, text):
+        turn["hearing"] = False
+        turn["q"] = text or "(didn't catch that)"
+        turn["status"] = ""
+        self._chat_last = time.monotonic()
+        self._run_chat_turn(turn)
+
     def _start_voice_answer(self, text):
+        # Typed/injected question (tests, demos): same screen, no mic.
         self.state = "voiceanswer"
         self._chat_last = time.monotonic()
         turn = {"q": text or "(didn't catch that)", "lines": [], "answer": "",
@@ -2023,11 +2036,10 @@ class UI:
     def _chat_follow_up(self):
         if self._voice is None or any(t["busy"] for t in self._chat):
             return                                # wait for the current answer
-        self._voice.start_listening()
-        self.state = "voice"
+        self._chat_listen()
 
     def _chat_ask_again(self):
-        if not self._chat or self._chat[-1]["busy"]:
+        if not self._chat or self._chat[-1]["busy"] or self._chat[-1].get("hearing"):
             return
         turn = self._chat[-1]
         turn.update({"lines": [], "answer": "", "status": "", "busy": True})
@@ -2156,9 +2168,6 @@ class UI:
             self._draw_module_bar(surface)
             return
         
-        if self.state == "voice":
-            self._draw_voice_listening(surface)
-            return
         if self.state == "voiceanswer":
             self.diag_screen.draw(surface)
             self._draw_chat_bar(surface)

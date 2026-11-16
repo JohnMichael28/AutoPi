@@ -48,6 +48,18 @@ class PromptLibrary:
         return text + "\n\n" + self._read(security)
 
 
+def tidy_answer(text):
+    """The small on-device model sometimes parrots its own prompt: "<<DATA"
+    fence markers, or a "SECURITY: I cannot claim..." sentence copied from
+    the rules. Strip those so the driver only reads the explanation."""
+    for marker in ("<<END DATA>>", "<<DATA", "<<", ">>"):
+        text = text.replace(marker, "")
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    keep = [p for p in parts if "SECURITY" not in p.upper()
+            and "AS AN AI" not in p.upper()]
+    return " ".join(keep).strip() or text.strip()
+
+
 def fence(label, text, max_chars=4000):
     """Wrap untrusted text as DATA. Any fence markers inside the text are
     defanged so data can't 'close' its own block and start giving orders.

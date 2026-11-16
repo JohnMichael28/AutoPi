@@ -5,6 +5,7 @@ import time
 
 import requests
 
+from autopi.guardrails import tidy_answer
 from autopi.model_gate import LOCAL_MODEL_LOCK
 
 
@@ -15,7 +16,7 @@ class AIClient:
     MODEL   - llama-server on this Pi (OpenAI /v1 API, 127.0.0.1:8080): a small
               quantized model (Qwen3-0.6B) kept on a tight leash by the system
               prompt below.
-    FLOOR   - if the Pi model is down, ask() returns an 'AI unavailable' string
+    FLOOR   - if the AutoPi AI is down, ask() returns an 'AI unavailable' string
               right away (connection refused is instant) and callers show their
               own offline text (OfflineExplainer, playbook steps).
 
@@ -85,16 +86,9 @@ class AIClient:
 
     @staticmethod
     def tidy(text):
-        """The small Pi model sometimes parrots its own prompt: "<<DATA"
-        fence markers, or a "SECURITY: I cannot claim..." sentence copied
-        from the rules (seen on the real car's sonar screen). Strip those so
-        the driver only reads the explanation."""
-        for marker in ("<<END DATA>>", "<<DATA", "<<", ">>"):
-            text = text.replace(marker, "")
-        parts = re.split(r"(?<=[.!?])\s+", text.strip())
-        keep = [p for p in parts if "SECURITY" not in p.upper()
-                and "AS AN AI" not in p.upper()]
-        return " ".join(keep).strip() or text.strip()
+        """Strip prompt-parroting (fence markers, SECURITY sentences).
+        Shared with the voice copilot: guardrails.tidy_answer."""
+        return tidy_answer(text)
 
     def __init__(self, config=None, model=None,
                  local_url="http://127.0.0.1:8080", local_model="qwen3-0.6b"):
@@ -189,10 +183,10 @@ class AIClient:
         try:
             return self._screen(prompt, self.__ask_local(prompt))
         except requests.exceptions.ConnectionError:
-            return ("AI unavailable: the Pi AI model is not running "
+            return ("AI unavailable: the AutoPi AI is not running "
                     "(sudo systemctl restart llama-server)")
         except requests.exceptions.Timeout:
-            return "AI unavailable: the Pi AI model is busy (timed out)"
+            return "AI unavailable: the AutoPi AI is busy (timed out)"
         except Exception as e:
             return "AI unavailable: " + str(e)[:120]
 

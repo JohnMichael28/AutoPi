@@ -93,7 +93,7 @@
         "name": "pi",
         "base_url": "http://127.0.0.1:8080",
         "model": "qwen3-0.6b",
-        "timeout_s": 45
+        "timeout_s": 90
       }
     ],
     "retry_after_s": 5,
@@ -123,7 +123,9 @@
     "route_first": true,
     "offline_retries": 3,
     "retry_wait_s": 5,
-    "history_turns": 3
+    "history_turns": 3,
+    "fast_answer": true,
+    "fast_max_tokens": 140
   },
   "warmup": {
     "running_rpm": 400,

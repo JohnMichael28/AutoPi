@@ -232,7 +232,7 @@ class HealthCheck:
             sec.raw.append("OFF: " + str(st.get("reason", "unknown")))
             sec.set("watch", "The learned-normal monitor is not running.",
                     ["Copy models/anomaly_model.joblib into ~/autopi-project/models/.",
-                     "In the Pi venv run: pip install scikit-learn joblib"])
+                     "In the AutoPi venv run: pip install scikit-learn joblib"])
             return sec
         res = (self._ml_result() if self._ml_result else None) or {}
         sev = res.get("severity", "ok")
