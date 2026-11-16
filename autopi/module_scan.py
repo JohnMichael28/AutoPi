@@ -343,7 +343,7 @@ class ModuleScanner:
         head = "all-module scan " + str(mins) + " min ago: "
         return [head + (str(len(out)) + " module code(s)" if out else "no module codes")] + out
 
-    # ---- presentation (green raw / yellow meaning) ----------------------
+    # ---- presentation (green raw / purple meaning) ----------------------
     def module_items(self, mod, ident, result):
         items = [("--- " + self.menu_label(mod) + " ---", "head"),
                  ("RAW  request ID " + mod["req"] + "  reply ID "

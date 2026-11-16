@@ -6,10 +6,13 @@ import time
 
 import pygame
 
+from autopi.palette import PURPLE, BLUE
+
 TERM_GREEN = (65, 255, 120)
 TERM_DIM = (30, 120, 55)
 TERM_BG = (8, 14, 8)
-WARN_YELLOW = (255, 215, 40)
+AI_PURPLE = PURPLE           # AutoPi's meaning / what to do
+WARN_YELLOW = AI_PURPLE       # old name kept for old imports - it's PURPLE now
 
 # Max characters per line before wrapping. Sized for the 18px consolas body
 # font at x=24 on an 800px screen (~80 char hard limit); 58 leaves a margin so
@@ -32,8 +35,8 @@ class DiagScreen:
         self._reader = None
 
     # "you" = what the driver said on TALK TO AUTOPI (dark purple).
-    KIND_COLORS = {"you": (175, 125, 255), "head": TERM_DIM, "dim": TERM_DIM, "raw": TERM_GREEN,
-                   "ai": WARN_YELLOW}
+    KIND_COLORS = {"you": BLUE, "head": TERM_DIM, "dim": TERM_DIM, "raw": TERM_GREEN,
+                   "ai": AI_PURPLE}
 
     def open(self, reader, priority=None):
         """priority: optional context-manager factory (VehicleData.priority)
@@ -79,12 +82,12 @@ class DiagScreen:
         lines.append(("", TERM_GREEN))
         lines.append(("--- PLAIN ENGLISH ---", TERM_DIM))
         for chunk in self._wrap(result["plain_english"], WRAP_W):
-            lines.append((chunk, WARN_YELLOW))
+            lines.append((chunk, AI_PURPLE))
         return lines
 
     def _background_read(self, token):
         # 1) RAW first: shown the moment the car answers (green).
-        # 2) AI translation afterwards (yellow) - a slow model never holds
+        # 2) AI translation afterwards (purple) - a slow model never holds
         #    the raw data hostage again.
         reader = self._reader
         try:
@@ -95,18 +98,18 @@ class DiagScreen:
                 raw = reader.read()
         except Exception as err:
             if token == self._token:
-                self._lines = [("Read failed:", TERM_DIM), (str(err), WARN_YELLOW)]
+                self._lines = [("Read failed:", TERM_DIM), (str(err), AI_PURPLE)]
                 self._loading = False
             return
         if token != self._token:
             return
         lines = self._format_raw(raw)
-        self._lines = lines + [("AI translating...", WARN_YELLOW)]
+        self._lines = lines + [("AI translating...", AI_PURPLE)]
         self._loading = False
 
         def status(text):
             if token == self._token:
-                self._lines = lines + [(text, WARN_YELLOW)]
+                self._lines = lines + [(text, AI_PURPLE)]
 
         def wanted():
             return self.is_showing(token)
@@ -121,7 +124,7 @@ class DiagScreen:
             return
         out = list(lines)
         for chunk in self._wrap(plain, WRAP_W):
-            out.append((chunk, WARN_YELLOW))
+            out.append((chunk, AI_PURPLE))
         self._lines = out
 
     def run_read(self):
@@ -131,7 +134,7 @@ class DiagScreen:
 
     def set_colored(self, title, items, keep_scroll=False):
         """items: [(text, kind)] with kind head/raw/ai/dim. The one layout
-        rule for every screen: dim headers, GREEN raw data, YELLOW meaning."""
+        rule for every screen: dim headers, GREEN raw data, PURPLE meaning."""
         self._token = getattr(self, "_token", 0) + 1
         self._last_draw = time.monotonic()   # counts as shown
         self._title = title
@@ -162,8 +165,8 @@ class DiagScreen:
     def set_message(self, title, body_lines):
         # For non-reader screens (report, fuel, engineer, clear-codes).
         # Section headers stay dim; the AI explanation block ("WHAT THIS MEANS"
-        # / "PLAIN ENGLISH") is yellow; everything else green. Keeps color
-        # meaning consistent across every screen: yellow = AI interpretation.
+        # / "PLAIN ENGLISH") is purple; everything else green. Keeps color
+        # meaning consistent across every screen: purple = AI interpretation.
         # Every line is wrapped so long content can't run off the right edge.
         self._token = getattr(self, "_token", 0) + 1
         self._last_draw = time.monotonic()   # counts as shown
@@ -176,7 +179,7 @@ class DiagScreen:
         for line in body_lines:
             stripped = line.strip()
             if stripped.startswith("---") and stripped.endswith("---"):
-                # Section header. AI-explanation sections flip us to yellow.
+                # Section header. AI-explanation sections flip us to purple.
                 if ("WHAT THIS MEANS" in stripped or "PLAIN ENGLISH" in stripped
                         or "DIAGNOSIS" in stripped):
                     in_ai = True
@@ -184,7 +187,7 @@ class DiagScreen:
                     in_ai = False
                 colored.append((line, TERM_DIM))
             else:
-                color = WARN_YELLOW if in_ai else TERM_GREEN
+                color = AI_PURPLE if in_ai else TERM_GREEN
                 # Wrap long lines; keep short ones as-is (preserves blank lines).
                 if len(line) > WRAP_W:
                     for chunk in self._wrap(line, WRAP_W):

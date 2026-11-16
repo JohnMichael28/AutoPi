@@ -22,15 +22,17 @@ import time
 
 import pygame
 
+from autopi.palette import PURPLE, YELLOW
+
 
 GREEN = (65, 255, 120)
 BRIGHT = (150, 255, 190)
 DIM = (30, 110, 50)
-YELLOW = (255, 215, 40)
+ATTENTION = PURPLE    # 'needs attention' (no yellow in AutoPi's colors)
 RED = (255, 70, 70)
 BG = (6, 12, 7)
 
-TAGS = {"ok": ("[ OK ]", GREEN), "warn": ("[WARN]", YELLOW),
+TAGS = {"ok": ("[ OK ]", GREEN), "warn": ("[WARN]", ATTENTION),
         "fail": ("[FAIL]", RED)}
 
 
@@ -117,7 +119,7 @@ class BootLoader:
         problems = [r for r in self._rows if r["state"] in ("warn", "fail")]
         if self._finished:
             if problems:
-                head, color = "READY - " + str(len(problems)) + " NEED ATTENTION", YELLOW
+                head, color = "READY - " + str(len(problems)) + " NEED ATTENTION", ATTENTION
             else:
                 head, color = "ALL SYSTEMS READY", BRIGHT
             sub = "loaded in " + str(int(time.monotonic() - self._start)) + " s"
@@ -136,13 +138,13 @@ class BootLoader:
 
         y = 262
         if problems:
-            surface.blit(self.font.render("NEEDS ATTENTION:", True, YELLOW), (40, y))
+            surface.blit(self.font.render("NEEDS ATTENTION:", True, ATTENTION), (40, y))
             y += 28
             for r in problems[:4]:
                 tag = "FAIL " if r["state"] == "fail" else "WARN "
                 line = tag + r["label"] + " - " + r["detail"]
                 surface.blit(self.font_small.render(line[:84], True,
-                             RED if r["state"] == "fail" else YELLOW), (40, y))
+                             RED if r["state"] == "fail" else ATTENTION), (40, y))
                 y += 24
         foot = ("tap to continue" if self._finished
                 else "tap to skip - loading continues in the background")
@@ -169,7 +171,7 @@ class BootLoader:
         for i, r in enumerate(self._rows):
             st = r["state"]
             if st in TAGS:
-                color = TAGS[st][1]
+                color = YELLOW if st == "warn" else TAGS[st][1]   # squares keep yellow
             elif st == "run":
                 color = BRIGHT if (frame // 8) % 2 == 0 else DIM
             else:

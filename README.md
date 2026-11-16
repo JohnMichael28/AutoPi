@@ -34,7 +34,9 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
   last 60 s with current/min/max and dashed warning limits.
 - **Full diagnostics** — read/pending/permanent/readiness codes, Mode 06,
   freeze frame. Every screen uses one layout: **green = raw data from the
-  car, yellow = what it means**. Raw data shows immediately; the AI
+  car, purple = what it means, blue = what you said**. (No yellow text: one
+  palette in `autopi/palette.py` - green raw data, purple AutoPi, blue driver, red faults;
+  the faces, gauges and graph lines keep their own colors.) Raw data shows immediately; the AI
   translation fills in after. Clear codes is spam-proof (CANCEL is the big
   button where fast taps land; CLEAR is disabled for the first 2 s).
 - **All-module scan + MODULES menu** — generic OBD-II only reaches the engine

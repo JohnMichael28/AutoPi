@@ -1350,7 +1350,7 @@ class SettlingFaceTests(unittest.TestCase):
 
 
 class TalkScreenTests(unittest.TestCase):
-    def test_driver_words_are_dark_purple_without_you_prefix(self):
+    def test_driver_words_are_blue_without_you_prefix(self):
         try:
             import pygame
             pygame.init()
@@ -1363,7 +1363,24 @@ class TalkScreenTests(unittest.TestCase):
         text, color = ds._lines[0]
         self.assertEqual(text, "how is my car doing")
         r, g, b = color
-        self.assertTrue(b > g and r > g and b > r)      # purple
+        self.assertTrue(b > g > r)                      # blue = the driver's words
+        r, g, b = ds._lines[1][1]
+        self.assertTrue(b > r > g)                      # purple = AutoPi's answer
+
+    def test_no_yellow_text_but_faces_untouched(self):
+        """Nov 15 color scheme: plain TEXT is never yellow (purple = AutoPi,
+        blue = the driver). Faces, face labels, gauges and graph lines keep
+        their original colors - those must NOT change."""
+        from autopi.diag_screen import DiagScreen
+        from autopi.face import MOODS
+        yellow = (255, 215, 40)
+        self.assertNotIn(yellow, DiagScreen.KIND_COLORS.values())
+        self.assertEqual(MOODS["yellow"]["rgb"], yellow)                 # warning face
+        self.assertEqual(MOODS["yellow"]["text"], (185, 100, 255))
+        self.assertEqual(MOODS["purple"]["rgb"], (185, 100, 255))        # camp face
+        here = os.path.dirname(os.path.abspath(__file__))
+        report = open(os.path.join(here, "..", "autopi", "report_builder.py")).read()
+        self.assertNotIn("#ffd728", report)
 
 
 class TalkScrollTests(unittest.TestCase):

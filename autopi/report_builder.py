@@ -6,7 +6,7 @@ collect()      reads everything once (OBD priority, so it's quick):
                HealthCheck (codes, pending, permanent, readiness, Mode 06,
                live sensors vs ranges, warm-up, ML), freeze frame, this
                drive's warning log, the last dyno pull and a live snapshot.
-screen_items() same layout as every other screen: GREEN raw, YELLOW meaning.
+screen_items() same layout as every other screen: GREEN raw, PURPLE meaning.
 to_html()      a self-contained, printable page (opens on any phone; Share >
                Print > Save as PDF to email it to the shop).
 to_text()      plain text copy of the same content.
@@ -18,6 +18,8 @@ anything estimated (dyno, ML) says so.
 import html
 import os
 import time
+
+from autopi.palette import HTML_PURPLE, HTML_PURPLE_PRINT
 
 try:
     import obd
@@ -253,23 +255,23 @@ class DiagnosticReport:
     def to_html(self, data, summary=None):
         e = html.escape
         level, verdict_text = self.verdict(data)
-        color = {"fix": "#ff5a5a", "watch": "#ffd728", "ok": "#41ff78"}[level]
+        color = {"fix": "#ff5a5a", "watch": HTML_PURPLE, "ok": "#41ff78"}[level]
         css = ("body{background:#070d08;color:#41ff78;font-family:Consolas,Menlo,monospace;"
                "margin:0;padding:16px;max-width:900px}"
                "h1{font-size:22px;margin:0 0 4px}h2{color:#2f8a48;font-size:15px;"
                "border-bottom:1px solid #1e4d2a;padding-bottom:3px;margin:22px 0 8px;"
                "text-transform:uppercase;letter-spacing:1px}"
-               ".sub{color:#2f8a48;font-size:12px}.raw{color:#41ff78}.ai{color:#ffd728}"
+               ".sub{color:#2f8a48;font-size:12px}.raw{color:#41ff78}.ai{color:" + HTML_PURPLE + "}"
                ".card{border:2px solid " + color + ";padding:10px 12px;margin:14px 0;"
                "font-size:18px;color:" + color + "}"
                "table{border-collapse:collapse;width:100%;font-size:13px}"
                "td{padding:3px 6px;border-bottom:1px solid #12301a;vertical-align:top}"
                "td.k{color:#2f8a48;width:42%}.tag{font-weight:bold}"
-               ".fix{color:#ff5a5a}.watch{color:#ffd728}.ok{color:#41ff78}"
-               "ol{margin:4px 0 4px 18px;color:#ffd728}p{margin:4px 0}"
+               ".fix{color:#ff5a5a}.watch{color:" + HTML_PURPLE + "}.ok{color:#41ff78}"
+               "ol{margin:4px 0 4px 18px;color:" + HTML_PURPLE + "}p{margin:4px 0}"
                ".legend{font-size:12px;color:#2f8a48;margin-top:6px}"
                "@media print{body{background:#fff;color:#000}.raw{color:#000}"
-               ".ai,ol{color:#7a5a00}h2,.sub,td.k,.legend{color:#333}"
+               ".ai,ol{color:" + HTML_PURPLE_PRINT + "}h2,.sub,td.k,.legend{color:#333}"
                ".card{color:#000}}")
         h = ["<!DOCTYPE html><html><head><meta charset='utf-8'>",
              "<meta name='viewport' content='width=device-width,initial-scale=1'>",
@@ -277,7 +279,7 @@ class DiagnosticReport:
              + "</style></head><body>",
              "<h1>AUTOPI // FULL DIAGNOSTIC REPORT</h1>",
              "<div class='sub'>" + e(data["car"]) + " &middot; " + e(data["time"]) + "</div>",
-             "<div class='legend'>Green = raw data read from the car. Yellow = AutoPi's "
+             "<div class='legend'>Green = raw data read from the car. Purple = AutoPi's "
              "explanation / what to do.</div>",
              "<div class='card'>OVERALL: " + e(verdict_text) + "</div>"]
         if summary:

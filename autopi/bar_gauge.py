@@ -68,4 +68,4 @@ class BarGauge:
         text = str(int(value)) + self._unit
         v = self._font_val.render(text, True, color)
         surface.blit(v, (self._x + self._w // 2 - v.get_width() // 2,
-                         self._y + self._h + 6))
+                         self._y + self._h + 6))

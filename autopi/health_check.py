@@ -5,13 +5,13 @@ diagnostic screen):
 
     --- 1. STORED CODES (MODE 03) ---      dim header
     RAW  P0171 System Too Lean Bank 1      GREEN  = exactly what the car said
-    [FIX] Engine is running lean...        YELLOW = translation / what it means
-      1. Listen for a hiss at idle...      YELLOW = what to do
+    [FIX] Engine is running lean...        PURPLE = translation / what it means
+      1. Listen for a hiss at idle...      PURPLE = what to do
 
 Sections: stored codes, pending (07), permanent (0A), readiness monitors,
 Mode 06 misfire test, live sensors vs sourced ranges, warm-up, ML monitor.
 The translation here is rule-based (instant, offline, can't hallucinate);
-the UI adds an AI summary at the bottom afterwards, also in yellow.
+the UI adds an AI summary at the bottom afterwards, also in purple.
 
 Ranges (sourced, same as tools.NORMAL_RANGES / WarningAdvisor): coolant
 fully warm 85-105 C; fuel trims normal within +/-10 %, problem beyond 15 %;

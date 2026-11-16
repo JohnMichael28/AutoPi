@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import os
+from autopi.palette import PURPLE, YELLOW   # YELLOW: face screen only
 from autopi.face import Face, StatBar, Speech, MOODS
 from autopi.graphs import LiveGraph, DynoGraph
 from autopi.terminal import Terminal, MENUS
@@ -773,7 +774,7 @@ class UI:
     def _open_read_codes(self):
         # Mode 03 - stored codes. Read on a thread with OBD priority (no UI
         # freeze), RAW shown in green the moment it arrives, then each code's
-        # plain-English meaning fills in underneath in yellow.
+        # plain-English meaning fills in underneath in purple.
         self.state = "diag"
         self._active_diag = None
         if self._vehicle is None:
@@ -905,7 +906,7 @@ class UI:
 
     def _open_module(self, mod):
         # One module in depth: identity (name, part #, software), its codes
-        # in green, meaning in yellow, AI explanation, and a CLEAR bar.
+        # in green, meaning in purple, AI explanation, and a CLEAR bar.
         title = self._modules.menu_label(mod)
         self._module_view = mod
         self._active_diag = None
@@ -1038,7 +1039,7 @@ class UI:
         heading = ("CLEAR TROUBLE CODES?" if target is None else
                    "CLEAR CODES IN " + self._modules.menu_label(target)[:26] + "?")
         title = pygame.font.SysFont("consolas", 24, bold=True).render(
-            heading, True, (255, 215, 40))
+            heading, True, PURPLE)
         surface.blit(title, (40, 40))
         pygame.draw.line(surface, (30, 120, 55), (40, 82),
                          (self.width - 40, 82), 2)
@@ -1113,7 +1114,7 @@ class UI:
         self.state = "diag"
     def _open_fuel(self):
         # FUEL SYSTEM tab: trims + O2 (GREEN, live) + verdict and AI
-        # diagnosis (YELLOW). The live numbers refresh every few seconds, but
+        # diagnosis (PURPLE). The live numbers refresh every few seconds, but
         # the AI is asked ONCE per distinct reading (trims rounded to 1 %),
         # in the background, with automatic retries - refreshing never piles
         # up AI calls or wipes the answer anymore.
@@ -1192,7 +1193,7 @@ class UI:
             items.append(("AI thinking...", "ai"))
 
         if ask and self._ai_client is None and not fa["text"]:
-            items[-1] = ("AI not available - the yellow verdict above is AutoPi's own rule.", "ai")
+            items[-1] = ("AI not available - the purple verdict above is AutoPi's own rule.", "ai")
         elif ask and fa["key"] != key and not fa["busy"] and self._ai_client is not None:
             fa["busy"] = True
             fa["want"] = key
@@ -1368,7 +1369,7 @@ class UI:
             steps = self._playbook.steps_for_anomaly(payload)
         else:
             steps = self._playbook.steps_for_warning(payload)
-        # Same layout as every diagnostic screen: RAW green, meaning yellow.
+        # Same layout as every diagnostic screen: RAW green, meaning purple.
         head = [("--- RAW ---", "head")]
         if kind == "anomaly":
             head.append(("RAW  regime " + str(payload.get("regime", "--"))
@@ -1411,7 +1412,7 @@ class UI:
     def _open_health_check(self):
         # One tap: AutoPi checks codes, pending, permanent, readiness, Mode 06,
         # live sensors, warm-up and the ML monitor. Same layout as every
-        # diagnostic screen: GREEN = raw from the car, YELLOW = meaning.
+        # diagnostic screen: GREEN = raw from the car, PURPLE = meaning.
         self._active_diag = None
         self.state = "diag"
         if self._health_busy:
@@ -1444,7 +1445,7 @@ class UI:
                 "HEALTH CHECK", items + [("AI translating...", "ai")])
             self._health_busy = False
             if self._ai_client is None or not sections:
-                summary = "AI not available - the yellow lines above are AutoPi's own rules."
+                summary = "AI not available - the purple lines above are AutoPi's own rules."
             else:
                 prompt = ("These are AutoPi health-check results for this car, "
                           "one line per check (title: raw data => ok/watch/fix):\n"
@@ -1552,7 +1553,7 @@ class UI:
             box = {"token": self.diag_screen.set_colored(
                 "FULL DIAGNOSTIC REPORT", report.screen_items(data))}
             if self._ai_client is None:
-                self._report_summary = "AI not available - the yellow lines are AutoPi's own rules."
+                self._report_summary = "AI not available - the purple lines are AutoPi's own rules."
             else:
                 prompt = ("Write a short summary of this car's condition for its owner and "
                           "mechanic: 3-4 plain sentences, most important first, then what "
@@ -1691,7 +1692,7 @@ class UI:
         surface.fill((8, 14, 8))
         green = (65, 255, 120)
         dim = (30, 120, 55)
-        yellow = (255, 215, 40)
+        purple = PURPLE
         big = pygame.font.SysFont("consolas", 20, bold=True)
         font = pygame.font.SysFont("consolas", 16)
         small = pygame.font.SysFont("consolas", 13)
@@ -1708,15 +1709,15 @@ class UI:
 
         if info.get("status"):
             for i, chunk in enumerate(self._wrap_line(info["status"], 70)):
-                surface.blit(font.render(chunk, True, yellow), (24, 60 + i * 22))
+                surface.blit(font.render(chunk, True, purple), (24, 60 + i * 22))
         elif mode == "hotspot" and info.get("wifi_qr") and info.get("url_qr"):
             self._draw_qr(surface, info["wifi_qr"], 40, 78, 200)
             self._draw_qr(surface, info["url_qr"], 300, 78, 200)
             surface.blit(font.render("1. SCAN TO JOIN WIFI", True, green), (40, 52))
             surface.blit(font.render("2. SCAN TO OPEN REPORT", True, green), (300, 52))
             ssid, pw = info.get("wifi_text", ("", ""))
-            lines = [("Or join by hand:", dim), ("WiFi: " + ssid, yellow),
-                     ("Pass: " + pw, yellow), ("", dim),
+            lines = [("Or join by hand:", dim), ("WiFi: " + ssid, purple),
+                     ("Pass: " + pw, purple), ("", dim),
                      ("No internet needed.", dim), ("Phone may say 'no", dim),
                      ("internet' - stay on", dim), ("it, then scan #2.", dim),
                      ("", dim), ("Then Share > Print >", green), ("Save as PDF.", green)]
@@ -1726,7 +1727,7 @@ class UI:
             self._draw_qr(surface, info["qr"], 40, 60, 300)
             for i, (t, c) in enumerate([("Phone on the same WiFi", green),
                                          ("as AutoPi? Scan this.", green), ("", dim),
-                                         ("ADDRESS:", dim), (info.get("url", "")[-34:], yellow)]):
+                                         ("ADDRESS:", dim), (info.get("url", "")[-34:], purple)]):
                 surface.blit(font.render(t, True, c), (380, 80 + i * 24))
         elif mode == "text" and info.get("text_qr"):
             self._draw_qr(surface, info["text_qr"], 40, 52, 320)
@@ -1738,7 +1739,7 @@ class UI:
                                          ("(codes + verdict + AI)", dim)]):
                 surface.blit(font.render(t, True, c), (400, 80 + i * 24))
         elif mode == "text":
-            surface.blit(font.render("Install 'qrcode' on AutoPi for QR codes.", True, yellow), (24, 70))
+            surface.blit(font.render("Install 'qrcode' on AutoPi for QR codes.", True, purple), (24, 70))
 
         usb = info.get("usb")
         foot = ("USB: copied to " + usb[0][-30:]) if usb else "USB: no stick plugged in"
@@ -1931,10 +1932,10 @@ class UI:
         pop = self._look_popup
         h = 74
         pygame.draw.rect(surface, (20, 16, 4), (0, 0, self.width, h))
-        pygame.draw.rect(surface, (255, 215, 40), (0, 0, self.width, h), 3)
+        pygame.draw.rect(surface, YELLOW, (0, 0, self.width, h), 3)
         big = pygame.font.SysFont("consolas", 20, bold=True)
         small = pygame.font.SysFont("consolas", 14)
-        surface.blit(big.render("!! " + pop["title"], True, (255, 215, 40)), (14, 8))
+        surface.blit(big.render("!! " + pop["title"], True, YELLOW), (14, 8))
         surface.blit(small.render(pop.get("issue", "")[:78], True, (230, 220, 180)), (14, 34))
         left = int(pop["until"] - time.monotonic()) + 1
         tail = "  |  tap to open  |  X (" + str(left) + "s)"
@@ -1942,8 +1943,8 @@ class UI:
         line = ("Do: " + step[:78 - len(tail) - 4] + tail) if step else tail.strip(" |")
         surface.blit(small.render(line, True, (150, 140, 100)), (14, 53))
         # X box (dismiss) on the right
-        pygame.draw.rect(surface, (255, 215, 40), (self.width - 62, 14, 46, 46), 2)
-        surface.blit(big.render("X", True, (255, 215, 40)), (self.width - 45, 25))
+        pygame.draw.rect(surface, YELLOW, (self.width - 62, 14, 46, 46), 2)
+        surface.blit(big.render("X", True, YELLOW), (self.width - 45, 25))
 
     # ---- TALK TO AUTOPI (conversation) -----------------------------------
     def _copilot_health(self):
@@ -2107,7 +2108,7 @@ class UI:
         mode = getattr(self.data, "mode", snap.get("mode", "highway"))
         # The WarningAdvisor is the single source of truth for the issue light:
         # if it has active warnings, its severity sets the face color (red/
-        # yellow), and the WARNINGS screen lists exactly those same warnings -
+        # purple), and the WARNINGS screen lists exactly those same warnings -
         # face and list can never disagree. If no warnings, fall back to the
         # normal mode/state color from FaceState.
         advisor_mood = self.advisor.face_mood(self._active_warnings)
@@ -2244,7 +2245,7 @@ class UI:
                 elif warm.get("phase") == "all_clear":
                     head_color = (57, 255, 120)
                 elif warm["headline"].startswith("EASE"):
-                    head_color = (255, 215, 40)
+                    head_color = YELLOW
                 lbl = pygame.font.SysFont("consolas", 24, bold=True).render(
                     warm["headline"], True, head_color)
                 pygame.draw.rect(surface, (10, 10, 12), (0, 430, self.width, 50))
@@ -2308,7 +2309,7 @@ class UI:
                          (100, 140), (self.width-100, 140), 2)
         fm = pygame.font.SysFont("consolas", 24, bold=True)
         if (self.frame // 30) % 2 == 0:
-            m = fm.render(message, True, (255, 215, 40))
+            m = fm.render(message, True, PURPLE)
             surface.blit(m, (self.width//2 - m.get_width()//2, 200))
         fs = pygame.font.SysFont("consolas", 16)
         note = fs.render("Feature ready - awaiting live vehicle connection",
@@ -2342,7 +2343,7 @@ class UI:
             y += 30
         rate = self.data.rpm_rate_hz() if hasattr(self.data, "rpm_rate_hz") else 0.0
         line = "RPM REFRESH".ljust(16) + ": " + str(rate) + " per second"
-        surface.blit(font.render(line, True, (255, 215, 40)), (24, y))
+        surface.blit(font.render(line, True, PURPLE), (24, y))
         hint = pygame.font.SysFont("consolas", 15).render(
             "TAP to go back", True, (30, 120, 55))
         surface.blit(hint, (20, self.height - 26))
@@ -2424,7 +2425,7 @@ class UI:
                      + entry["time"][11:] + "  " + str(entry["peak_hp"]) + " HP")
         else:
             line1 = "NO PULLS RECORDED YET"
-        l1 = font.render(line1, True, (255, 215, 40))
+        l1 = font.render(line1, True, PURPLE)
         surface.blit(l1, (self.width // 2 - l1.get_width() // 2, 418))
         l2 = small.render(status[:50], True, (255, 90, 90) if recording else (180, 180, 190))
         surface.blit(l2, (self.width // 2 - l2.get_width() // 2, 443))
@@ -2457,7 +2458,7 @@ class UI:
         # real crank/wheel HP. Drawn on top of the dyno graph.
         font = pygame.font.SysFont("consolas", 18, bold=True)
         text = font.render("* ESTIMATED (OBD acceleration method) *",
-                           True, (255, 215, 40))
+                           True, PURPLE)
         # Semi-transparent strip behind it for legibility over the graph.
         strip = pygame.Surface((text.get_width() + 20, text.get_height() + 8))
         strip.set_alpha(180)
