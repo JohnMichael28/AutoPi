@@ -5,6 +5,8 @@ import time
 
 import requests
 
+from autopi.model_gate import LOCAL_MODEL_LOCK
+
 
 class AIClient:
     """The AI 'brain' for AutoPi. LOCAL ONLY (Nov 2026): it runs entirely on
@@ -118,7 +120,7 @@ class AIClient:
         # The Pi model answers ONE question at a time. Serialize calls so
         # screens queue in order instead of all timing out together, and let
         # a duplicate question wait for the first one's answer.
-        self.__model_lock = threading.Lock()
+        self.__model_lock = LOCAL_MODEL_LOCK       # shared with the copilot
         self.__inflight = {}
         self.__inflight_lock = threading.Lock()
         self.retry_attempts = acfg.get("retry_attempts", 3)

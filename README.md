@@ -24,7 +24,9 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
 - **Cold-start guide** — after a cold start the face turns blue and the screen
   says what's happening: "COLD START – WAIT, FAST IDLE 1400 RPM" until the
   idle settles, then "SAFE TO DRIVE OFF – GO GENTLY" (spoken too), "EASE OFF"
-  if you rev it cold, and "ENGINE WARM – ALL CLEAR" at 70 °C.
+  if you rev it cold, and "ENGINE WARM – ALL CLEAR" at 85 °C. Every start
+  waits for the idle needle to drop and stay down, even a warm restart
+  ("WAIT – IDLE STILL HIGH" until it settles, then "IDLE SETTLED – READY TO GO").
 - **Fast live data** — RPM, throttle and speed stream on their own "fast lane"
   thread (~10x/s) so the screen follows your foot instead of lagging behind it.
 - **Live graph pages** — a menu of scan-tool style pages (ENGINE, FUEL, TEMPS,
@@ -72,9 +74,14 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
   Clearly labeled ESTIMATED (OBD acceleration method with road-load
   correction, not a real dyno).
 - **Tuning monitor** — live knock/timing watch with debounced alarms.
-- **Offline voice assistant** — push-to-talk questions answered by the on-device
-  language model, using your car's live data. Fully offline speech recognition
-  (Vosk) + fully offline answers (local SLM).
+- **Talk to AutoPi** — push-to-talk conversation with the on-device language
+  model about your car's live data. Ask follow-ups (**ASK FOLLOW-UP**): the last
+  3 questions and answers go along, so "is that bad?" makes sense. "How is my car
+  doing?" pulls a full overview — live values, engine codes, AutoPi's warnings,
+  the ML monitor, warm-up and the last all-module scan. If the Pi model is busy it
+  keeps trying (3 retries, shown on screen) before showing the plain-English data;
+  **ASK AGAIN** retries, **DONE** ends the conversation. Fully offline speech
+  recognition (Vosk) + fully offline answers (local SLM).
 - **ML anomaly detection** — a trained, context-aware Isolation Forest runs
   on-device and flags readings that deviate from your car's learned normal.
 
@@ -104,7 +111,8 @@ copilot also runs the obvious tool for your question in code *before* the
 first model turn, so the small model can usually answer in a single turn.
 
 **Responsive by design.** AI questions are serialized (the Pi model answers one
-at a time), identical questions share one answer, answers are cached for 10
+at a time; screens and the voice copilot share one gate, so they queue instead
+of timing each other out), identical questions share one answer, answers are cached for 10
 minutes, a stopped model service is reported instantly (not after a timeout), and
 every screen retries on its own ("trying again in N s") while you stay on it —
 you never have to back out and reopen a screen to get an answer. Voice answers

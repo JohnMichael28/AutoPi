@@ -325,7 +325,23 @@ class ModuleScanner:
             if progress is not None:
                 progress(n + 1, len(self.modules), self.label(mod))
             results.append((mod, self.read_dtcs(mod)))
+        self.last_scan = (time.time(), results)     # for "how's my car doing?"
         return results
+
+    def last_scan_summary(self):
+        """Short lines about the most recent full scan, for the copilot."""
+        last = getattr(self, "last_scan", None)
+        if not last:
+            return ["module scan not run yet this session (DIAGNOSTICS > ALL-MODULE SCAN)"]
+        when, results = last
+        out = []
+        for mod, res in results:
+            for c in res.get("codes", []):
+                out.append(self.label(mod) + ": " + c["code"] + " (" + c["status_text"] + ")"
+                           + (" - " + c["meaning"][:80] if c.get("meaning") else ""))
+        mins = int((time.time() - when) // 60)
+        head = "all-module scan " + str(mins) + " min ago: "
+        return [head + (str(len(out)) + " module code(s)" if out else "no module codes")] + out
 
     # ---- presentation (green raw / yellow meaning) ----------------------
     def module_items(self, mod, ident, result):

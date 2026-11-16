@@ -68,6 +68,9 @@ class ToolRegistry:
             raise ValueError("duplicate tool " + tool.name)
         self._tools[tool.name] = tool
 
+    def has(self, name):
+        return name in self._tools
+
     def _allowed(self, tool, profile):
         allow = self._profiles.get(profile, {}).get("allow", ["read"])
         return tool.permission in allow
@@ -122,8 +125,12 @@ NORMAL_RANGES = {
 }
 
 
+OVERVIEW_KEYS = ["rpm", "speed", "coolant_temp", "engine_load", "stft_b1",
+                 "ltft_b1", "o2_b1s2", "fuel", "run_time"]
+
+
 def build_default_registry(profiles, snapshot_fn, dtc_fn=None, explain_fn=None,
-                           dyno_fn=None):
+                           dyno_fn=None, health_fn=None):
     reg = ToolRegistry(profiles, live_snapshot=snapshot_fn)
 
     def get_live_data(keys):
@@ -228,5 +235,34 @@ def build_default_registry(profiles, snapshot_fn, dtc_fn=None, explain_fn=None,
         "last_dyno_pull",
         "Get the most recent automatically captured dyno pull (estimate).",
         {}, last_dyno_pull))
+
+    def car_health_overview():
+        # One look at everything: live core values, engine codes, AutoPi's
+        # current warnings, the ML monitor, warm-up, and the last module scan.
+        snap = snapshot_fn() or {}
+        out = {"live": {k: snap.get(k, "--") for k in OVERVIEW_KEYS}}
+        try:
+            codes = dtc_fn() if dtc_fn is not None else []
+            out["engine_codes"] = [c[0] if isinstance(c, (list, tuple)) else str(c)
+                                   for c in (codes or [])] or "none"
+        except Exception as err:
+            out["engine_codes"] = "could not read (" + str(err)[:40] + ")"
+        extra = {}
+        if health_fn is not None:
+            try:
+                extra = health_fn() or {}
+            except Exception:
+                extra = {}
+        out.update(extra)
+        out["_units"] = "speed mph, temps C, trims %, run_time min"
+        out["_normal_ranges"] = NORMAL_RANGES
+        return out
+
+    reg.register(Tool(
+        "car_health_overview",
+        "Everything at once: live engine values, engine trouble codes, AutoPi's "
+        "active warnings, the ML monitor, warm-up state and codes found in other "
+        "modules (DCM, EyeSight...). Use for 'how is my car doing' questions.",
+        {}, car_health_overview))
 
     return reg

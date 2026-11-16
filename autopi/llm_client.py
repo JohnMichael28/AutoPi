@@ -15,6 +15,8 @@ import time
 import urllib.request
 import urllib.error
 
+from autopi.model_gate import LOCAL_MODEL_LOCK
+
 
 class LLMUnavailable(Exception):
     pass
@@ -64,14 +66,20 @@ class LLMClient:
                 continue
             if self._down_until.get(name, 0) > now:
                 continue
+            # Wait our turn for the Pi model (a screen may be using it).
+            if not LOCAL_MODEL_LOCK.acquire(timeout=tier.get("timeout_s", 30)):
+                errors.append(name + ": busy (another screen is using the Pi AI)")
+                continue
             try:
                 text = self._post(tier, messages, max_tokens, temperature)
                 self.last_tier = name
                 return text, name
             except (urllib.error.URLError, OSError, ValueError, KeyError,
                     IndexError) as err:
-                self._down_until[name] = now + self._retry_after
+                self._down_until[name] = time.time() + self._retry_after
                 errors.append(name + ": " + str(err)[:80])
+            finally:
+                LOCAL_MODEL_LOCK.release()
         raise LLMUnavailable("; ".join(errors) or "no tier available")
 
     def tier_names(self):

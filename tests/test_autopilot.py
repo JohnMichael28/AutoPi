@@ -48,10 +48,12 @@ class WarmupTests(unittest.TestCase):
         self.assertIn("SAFE TO DRIVE OFF", st["headline"])
         st = self.step(1, 4200, 30, speed=40, throttle=80)
         self.assertIn("EASE OFF", st["headline"])
-        st = self.step(1, 2000, 71, speed=40)
+        st = self.step(1, 2000, 80, speed=40)        # 80 C is not fully warm yet
+        self.assertEqual(st["phase"], DRIVE_GENTLY)
+        st = self.step(1, 2000, 86, speed=40)
         self.assertEqual(st["phase"], ALL_CLEAR)
         self.assertFalse(st["cold"])
-        st = self.step(9, 2000, 80, speed=40)
+        st = self.step(9, 2000, 90, speed=40)
         self.assertEqual(st["phase"], WARM)
         self.assertEqual(st["headline"], "")
 
@@ -62,10 +64,50 @@ class WarmupTests(unittest.TestCase):
             st = self.step(1, 1300, -3)
         self.assertEqual(st["phase"], DRIVE_GENTLY)
 
-    def test_warm_restart_skips(self):
-        st = self.step(0, 900, 88)
+    def test_hot_restart_waits_only_for_the_needle(self):
+        # Hot engine, idle drops right away: a few seconds of WAIT, then go.
+        st = self.step(0, 1250, 92)
+        self.assertEqual(st["phase"], FAST_IDLE)
+        self.assertIn("IDLE STILL HIGH", st["headline"])
+        for _ in range(7):
+            st = self.step(1, 820, 92)
+        self.assertEqual(st["phase"], ALL_CLEAR)
+        self.assertEqual(st["headline"], "IDLE SETTLED - READY TO GO")
+        st = self.step(9, 820, 92)
         self.assertEqual(st["phase"], WARM)
-        self.assertFalse(st["cold"])
+
+    def test_sat_a_while_idle_still_high_does_not_say_go(self):
+        # Nov 15: car "warm" but sat a while - ECU held the idle up.
+        # It must keep saying WAIT while the needle is up, however warm.
+        st = self.step(0, 1300, 75)
+        for _ in range(40):
+            st = self.step(1, 1150, 76)
+            self.assertEqual(st["phase"], FAST_IDLE)
+            self.assertTrue(st["cold"])
+            self.assertNotIn("SAFE", st["headline"])
+            self.assertNotIn("READY", st["headline"])
+
+    def test_needle_still_falling_is_not_settled(self):
+        # Below 1000 but still dropping 15 rpm/s: keep waiting until it levels off.
+        st = self.step(0, 1200, 90)
+        rpm = 990
+        for _ in range(10):
+            st = self.step(1, rpm, 90)
+            rpm -= 15
+        self.assertEqual(st["phase"], FAST_IDLE)
+        for _ in range(7):
+            st = self.step(1, 840, 90)
+        self.assertEqual(st["phase"], ALL_CLEAR)
+
+    def test_warm_but_not_hot_goes_gently_after_idle_drops(self):
+        st = self.step(0, 1300, 72)
+        for _ in range(7):
+            st = self.step(1, 850, 72)
+        self.assertEqual(st["phase"], FAST_IDLE)        # below 85 C: 20 s oil wait too
+        for _ in range(14):
+            st = self.step(1, 850, 72)
+        self.assertEqual(st["phase"], DRIVE_GENTLY)
+        self.assertIn("SAFE TO DRIVE OFF", st["headline"])
 
     def test_dropped_read_keeps_state_engine_off_resets(self):
         self.step(0, 1400, 10)
@@ -1261,6 +1303,50 @@ class ReportWordingTests(unittest.TestCase):
         other = sc.read_dtcs({"req": "7B0"})
         self.assertFalse(other.get("obd_checked"))
         self.assertNotIn("OBD-II", other["error"])
+
+
+class SettlingFaceTests(unittest.TestCase):
+    """Cold start = blue face. Warm-ish engine waiting for the idle = its own
+    color (white), never used by any other mood."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.w = WarmupMonitor(clock=self.clock)
+
+    def test_true_cold_start_is_blue(self):
+        st = self.w.update(rpm=1400, coolant=10)
+        self.assertEqual(st["mood"], "cold")
+        self.assertEqual(FaceState().decide(coolant_temp=10, cold=True,
+                                            settling=st["mood"] == "settling"), "cold")
+
+    def test_warm_engine_idle_up_is_settling_color(self):
+        st = self.w.update(rpm=1200, coolant=75)
+        self.assertEqual(st["mood"], "settling")
+        self.assertIn("IDLE STILL HIGH", st["headline"])
+        self.assertEqual(FaceState().decide(coolant_temp=75, cold=True, settling=True),
+                         "settling")
+
+    def test_no_mood_once_ready(self):
+        self.w.update(rpm=1200, coolant=92)
+        for _ in range(7):
+            self.clock.t += 1
+            st = self.w.update(rpm=820, coolant=92)
+        self.assertEqual(st["mood"], "")
+
+    def test_settling_color_is_new(self):
+        try:
+            from autopi.face import MOODS, FACES
+        except Exception:
+            self.skipTest("pygame not installed")
+        self.assertIn("settling", FACES)
+        others = [m["rgb"] for k, m in MOODS.items() if k != "settling"]
+        self.assertNotIn(MOODS["settling"]["rgb"], others)
+        r, g, b = MOODS["settling"]["rgb"]
+        self.assertTrue(min(r, g, b) > 200)            # white, unlike every other mood
+
+    def test_warnings_still_beat_settling(self):
+        self.assertEqual(FaceState().decide(coolant_temp=75, has_codes=True,
+                                            cold=True, settling=True), "red")
 
 
 if __name__ == "__main__":

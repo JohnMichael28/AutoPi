@@ -29,6 +29,12 @@ DEFAULTS = {
     "max_turns": 5,
     "max_tool_calls": 3,
     "deadline_s": 75,
+    # Talk-to-AutoPi keeps trying when the Pi model is busy or slow:
+    # this many extra attempts, waiting retry_wait_s between them.
+    "offline_retries": 3,
+    "retry_wait_s": 5,
+    # Follow-up questions: how many earlier Q/A turns the model sees.
+    "history_turns": 3,
     "max_answer_chars": 600,
     "route_first": True,
     # The code judge always runs. A second model as judge would double the
@@ -38,7 +44,7 @@ DEFAULTS = {
 
 
 class AIStack:
-    def __init__(self, cfg, snapshot_fn, vehicle=None, dyno_fn=None):
+    def __init__(self, cfg, snapshot_fn, vehicle=None, dyno_fn=None, health_fn=None):
         self.cfg = cfg
         self.prompts = PromptLibrary(cfg["prompts_dir"])
         self.scanner = InjectionScanner()
@@ -53,7 +59,7 @@ class AIStack:
 
         self.registry = build_default_registry(
             cfg["profiles"], snapshot_fn, dtc_fn=dtc_fn,
-            explain_fn=offline.explain, dyno_fn=dyno_fn)
+            explain_fn=offline.explain, dyno_fn=dyno_fn, health_fn=health_fn)
         jcfg = cfg.get("judge", {})
         self.judge = Judge(self.scanner, prompts=self.prompts, llm=self.llm,
                            max_chars=cfg["max_answer_chars"],
@@ -64,11 +70,14 @@ class AIStack:
                                max_turns=cfg["max_turns"],
                                max_tool_calls=cfg["max_tool_calls"],
                                deadline_s=cfg["deadline_s"],
-                               route_first=cfg.get("route_first", True))
+                               route_first=cfg.get("route_first", True),
+                               offline_retries=cfg.get("offline_retries", 3),
+                               retry_wait_s=cfg.get("retry_wait_s", 5),
+                               history_turns=cfg.get("history_turns", 3))
 
     @classmethod
     def from_config(cls, snapshot_fn, vehicle=None, dyno_fn=None,
-                    path="config.json"):
+                    path="config.json", health_fn=None):
         cfg = dict(DEFAULTS)
         try:
             with open(path) as f:
@@ -76,4 +85,5 @@ class AIStack:
             cfg.update(user)
         except Exception:
             pass
-        return cls(cfg, snapshot_fn, vehicle=vehicle, dyno_fn=dyno_fn)
+        return cls(cfg, snapshot_fn, vehicle=vehicle, dyno_fn=dyno_fn,
+                   health_fn=health_fn)

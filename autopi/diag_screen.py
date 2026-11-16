@@ -215,6 +215,9 @@ class DiagScreen:
     # (REPORT's SEND TO PHONE, a module's CLEAR bar). Lines never go under it,
     # so scrolling to the end always shows the last line.
     bottom_reserve = 0
+    # Hint when nothing to scroll; screens with their own buttons override it.
+    idle_hint = "TAP to go back"
+    scroll_hint = "TAP up/down to scroll  -  TOP-RIGHT to exit"
 
     def _visible(self):
         return max(1, (self.height - 96 - self.bottom_reserve) // 24)
@@ -245,8 +248,8 @@ class DiagScreen:
             surface.blit(self.font_body.render(text, True, color), (24, y))
             y += line_h
         if self.can_scroll():
-            hint = "TAP up/down to scroll  -  TOP-RIGHT to exit"
+            hint = self.scroll_hint
         else:
-            hint = "TAP to go back"
+            hint = self.idle_hint
         surface.blit(self.font_hint.render(hint, True, TERM_DIM),
                      (20, self.height - 26 - self.bottom_reserve))

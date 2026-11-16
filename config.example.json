@@ -15,7 +15,8 @@
     "model_path": "vosk-model-small-en-us-0.15",
     "device_name": "USB Audio",
     "sample_rate": 44100,
-    "record_seconds": 5
+    "record_seconds": 5,
+    "chat_keep_s": 300
   },
   "dyno": {
     "vehicle_weight_lbs": 4200,
@@ -119,15 +120,21 @@
         "pi"
       ]
     },
-    "route_first": true
+    "route_first": true,
+    "offline_retries": 3,
+    "retry_wait_s": 5,
+    "history_turns": 3
   },
   "warmup": {
     "running_rpm": 400,
     "settled_rpm": 1000,
-    "settle_hold_s": 3,
+    "settle_band_rpm": 75,
+    "settle_hold_s": 5,
     "min_wait_s": 20,
+    "warm_min_wait_s": 5,
     "max_wait_s": 90,
-    "warm_coolant_c": 70,
+    "warm_coolant_c": 85,
+    "cold_start_c": 50,
     "gentle_rpm": 3500,
     "gentle_throttle_pct": 60,
     "all_clear_show_s": 8,

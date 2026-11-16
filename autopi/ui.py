@@ -157,7 +157,8 @@ class UI:
             from autopi.ai_stack import AIStack
             dyno_fn = getattr(data_provider, "get_dyno_info", None)
             self._ai_stack = AIStack.from_config(self._snapshotter.latest,
-                                                 vehicle=vehicle, dyno_fn=dyno_fn)
+                                                 vehicle=vehicle, dyno_fn=dyno_fn,
+                                                 health_fn=self._copilot_health)
         except Exception as err:
             print("Copilot unavailable:", err)
         with open("config.json") as f:
@@ -253,10 +254,16 @@ class UI:
         
         # Voice input (push-to-talk). Offline Vosk transcription; answers route
         # through the AI. Built lazily so a mic/model problem can't stop boot.
+        # TALK TO AUTOPI keeps a conversation: follow-ups see the last turns.
         self._voice = None
+        self._chat = []              # [{"q", "lines", "answer", "status", "busy"}]
+        self._chat_id = 0            # bumps on DONE so old workers stop
+        self._chat_last = 0.0
+        self._chat_keep_s = 300
         try:
             with open("config.json") as vf:
                 vcfg = json.load(vf).get("voice", {})
+            self._chat_keep_s = vcfg.get("chat_keep_s", 300)
             from autopi.voice import VoiceInput
             self._voice = VoiceInput(
                 vcfg.get("model_path", "vosk-model-small-en-us-0.15"),
@@ -572,12 +579,28 @@ class UI:
                 self.terminal.selected = self._graph_page
         elif self.state in ("waiting", "engineer", "tuning"):
             self.state = "menu"
-        elif self.state in ("voice", "voiceanswer"):
-            self.state = "face"               # tap cancels the AI, back to face
+        elif self.state == "voice":
+            # Tap while listening = cancel; back to the conversation if one is open.
+            self.state = "voiceanswer" if self._chat else "face"
+            if self._chat:
+                self._render_chat()
+        elif self.state == "voiceanswer":
+            if y >= self.height - 44:
+                slot = int(x // (self.width / 3))
+                if slot == 0:
+                    self._chat_follow_up()
+                elif slot == 1:
+                    self._chat_ask_again()
+                else:
+                    self._chat_done()
+            elif self.diag_screen.can_scroll():
+                self.diag_screen.scroll_by(-3 if y < self.height // 2 else 3)
         elif self.state == "face":
             if self.speech.active:
                 self.speech.dismiss()
             elif self._voice is not None and y >= self.height - 70 and x <= 200:
+                if time.monotonic() - self._chat_last > self._chat_keep_s:
+                    self._chat = []           # long pause = new conversation
                 self._voice.start_listening()
                 self.state = "voice"
             elif (getattr(self.data, "mode", "") == "track"
@@ -1432,22 +1455,39 @@ class UI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _warmup_speech(self, warm):
-        # Speak once when a cold start begins and once when it's safe to go.
+        # Speak when a start needs a wait, and when it's safe to go.
+        # A warm restart whose idle drops in a few seconds stays quiet; if the
+        # idle is still up after warm_speak_after_s, say to wait for the needle.
         phase = warm.get("phase", "off")
-        if phase == self._warm_phase:
-            return
         previous = self._warm_phase
-        self._warm_phase = phase
+        if phase != previous:
+            self._warm_phase = phase
+            if phase == "fast_idle":
+                self._warm_wait_spoken = False
         if self.state != "face" or self.speech.active:
             return
-        if phase == "fast_idle" and previous == "off":
-            self.speech.say("COLD START",
-                "Engine is cold and on fast idle. Wait for the idle to drop - "
-                "I'll tell you when it is safe to drive off.")
-        elif phase == "drive_gently":
+        if phase == "fast_idle" and not getattr(self, "_warm_wait_spoken", False):
+            if warm.get("cold_start"):
+                self._warm_wait_spoken = True
+                self.speech.say("COLD START",
+                    "Engine is cold and on fast idle. Wait for the idle to drop - "
+                    "I'll tell you when it is safe to drive off.")
+            elif warm.get("elapsed_s", 0) >= 8:
+                self._warm_wait_spoken = True
+                self.speech.say("WAIT - IDLE STILL HIGH",
+                    "The idle is still up. Wait for the RPM needle to drop and "
+                    "settle - I'll tell you when it's ready to go.")
+            return
+        if phase == previous:
+            return
+        if phase == "drive_gently":
             self.speech.say("SAFE TO DRIVE OFF",
                 "Idle has settled. You can drive off now. Go gently until the "
                 "engine is warm: stay under 3500 RPM and no full throttle.")
+        elif phase == "all_clear" and previous == "fast_idle" \
+                and getattr(self, "_warm_wait_spoken", False):
+            self.speech.say("READY TO GO",
+                "The idle has dropped and settled. You're good to drive.")
 
     def _open_report(self):
         # FULL DIAGNOSTIC REPORT - the one for the mechanic. Reads everything
@@ -1890,24 +1930,131 @@ class UI:
         pygame.draw.rect(surface, (255, 215, 40), (self.width - 62, 14, 46, 46), 2)
         surface.blit(big.render("X", True, (255, 215, 40)), (self.width - 45, 25))
 
+    # ---- TALK TO AUTOPI (conversation) -----------------------------------
+    def _copilot_health(self):
+        """Extra facts for the copilot's car_health_overview tool."""
+        out = {"warnings_now": list(self._active_warnings) or "none"}
+        ml = dict(self._anomaly_result or {})
+        if ml.get("available", True) and ml.get("severity"):
+            out["ml_monitor"] = ml.get("severity")
+            names = self._playbook.describe_culprits(ml, limit=2)
+            if names:
+                out["ml_unusual"] = names
+            if ml.get("warming"):
+                out["ml_note"] = "engine warming up - coolant not judged yet"
+        warm = (self._snapshotter.latest() or {}).get("warmup") or {}
+        if warm.get("headline"):
+            out["warm_up"] = warm["headline"]
+        if self._modules is not None:
+            out["modules"] = self._modules.last_scan_summary()
+        return out
+
+    def _render_chat(self):
+        items = []
+        for n, turn in enumerate(self._chat):
+            if n:
+                items.append(("", "raw"))
+            items.append(("YOU: " + turn["q"], "raw"))
+            if turn["busy"]:
+                items.append((turn.get("status") or "AutoPi is thinking (on this Pi)...", "dim"))
+            for line in turn["lines"]:
+                kind = "raw" if line.startswith("  ") or line == "Evidence:" else "ai"
+                items.append((line, kind))
+        items.append(("", "raw"))
+        items.append(("Tap ASK FOLLOW-UP to keep talking.", "dim"))
+        token = self.diag_screen.set_colored("TALK TO AUTOPI", items)
+        self.diag_screen.bottom_reserve = 44
+        self.diag_screen.scroll_by(10000)      # newest at the bottom
+        return token
+
     def _start_voice_answer(self, text):
         self.state = "voiceanswer"
-        token = self.diag_screen.set_colored("YOU ASKED: " + text, [
-            ("Pi AI thinking... (runs on this Pi - no internet needed)", "ai")])
+        self._chat_last = time.monotonic()
+        turn = {"q": text or "(didn't catch that)", "lines": [], "answer": "",
+                "status": "", "busy": True}
+        self._chat.append(turn)
+        self._run_chat_turn(turn)
+
+    def _run_chat_turn(self, turn):
+        chat_id = self._chat_id
+        history = [(t["q"], t["answer"]) for t in self._chat
+                   if t is not turn and not t["busy"] and t["answer"]]
+        self._render_chat()
+
+        def still_wanted():
+            return self._chat_id == chat_id and turn in self._chat
+
+        def on_status(text):
+            turn["status"] = text
+            if still_wanted() and self.state == "voiceanswer":
+                self._render_chat()
 
         def worker():
             try:
-                lines = self._answer_question(text)
+                lines, answer = self._chat_answer(turn["q"], history, on_status, still_wanted)
             except Exception as err:
-                lines = ["AI error: " + str(err)[:80]]
-            items = []
-            for line in lines:
-                kind = "raw" if line.startswith("  ") or line == "Evidence:" else "ai"
-                items.append((line, kind))
-            if self.diag_screen.is_showing(token):
-                self.diag_screen.set_colored("YOU ASKED: " + text, items)
+                lines, answer = ["AI error: " + str(err)[:80]], ""
+            turn["lines"], turn["answer"], turn["busy"] = lines, answer, False
+            self._chat_last = time.monotonic()
+            if still_wanted() and self.state == "voiceanswer":
+                self._render_chat()
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _chat_answer(self, question, history, on_status, still_wanted):
+        """-> (screen lines, answer text kept for follow-ups)."""
+        if question.startswith("(didn't catch"):
+            return ["Didn't catch that - tap ASK FOLLOW-UP and try again."], ""
+        snap = self._snapshotter.latest()
+        if snap.get("rpm", "--") == "--" and snap.get("coolant_temp", "--") == "--":
+            return ["No live car data right now.",
+                    "Make sure the OBD adapter is connected and the car is on,",
+                    "then tap ASK AGAIN."], ""
+        if self._ai_stack is None:
+            lines = self._answer_question(question)
+            return lines, " ".join(lines)[:300]
+        result = self._ai_stack.copilot.ask(question, profile="driving", history=history,
+                                            on_status=on_status, still_wanted=still_wanted)
+        lines = list(result.lines())          # the screen wraps long lines itself
+        answer = (result.answer if result.status == "done"
+                  else "(no AI answer; AutoPi showed the live data)")
+        return lines, answer
+
+    def _chat_follow_up(self):
+        if self._voice is None or any(t["busy"] for t in self._chat):
+            return                                # wait for the current answer
+        self._voice.start_listening()
+        self.state = "voice"
+
+    def _chat_ask_again(self):
+        if not self._chat or self._chat[-1]["busy"]:
+            return
+        turn = self._chat[-1]
+        turn.update({"lines": [], "answer": "", "status": "", "busy": True})
+        self._run_chat_turn(turn)
+
+    def _chat_done(self):
+        self._chat = []
+        self._chat_id += 1                        # any running worker stops
+        self.state = "face"
+
+    def _draw_chat_bar(self, surface):
+        busy = any(t["busy"] for t in self._chat)
+        pygame.draw.rect(surface, (8, 14, 8), (0, self.height - 44, self.width, 44))
+        font = pygame.font.SysFont("consolas", 17, bold=True)
+        third = self.width // 3
+        labels = ["ASK FOLLOW-UP", "ASK AGAIN", "DONE"]
+        for i, label in enumerate(labels):
+            live = not (busy and i < 2)
+            color = (57, 255, 120) if live else (40, 70, 45)
+            rect = (i * third + 8, self.height - 40, third - 16, 34)
+            if i == 0 and live:
+                pygame.draw.rect(surface, color, rect)
+                t = font.render(label, True, (8, 14, 8))
+            else:
+                pygame.draw.rect(surface, color, rect, 2)
+                t = font.render(label, True, color)
+            surface.blit(t, (i * third + third // 2 - t.get_width() // 2, self.height - 33))
 
     def _draw_screen(self, surface):
         snap = self._live_snap()
@@ -1925,6 +2072,7 @@ class UI:
             mood = self.decider.decide(
                 coolant_temp=snap["coolant_temp"], has_codes=snap["has_codes"],
                 mode=mode, needs_gas=snap["needs_gas"], cold=bool(warm.get("cold")),
+                settling=warm.get("mood") == "settling",
                 fuel_flag=self.data.fuel_mood_flag() if hasattr(self.data, "fuel_mood_flag") else None)
         self.face.set_mood(mood)
 
@@ -1967,7 +2115,12 @@ class UI:
             return
         
         # Screens with a button bar along the bottom: keep text above it.
-        self.diag_screen.bottom_reserve = 44 if self.state in ("report", "module") else 0
+        self.diag_screen.bottom_reserve = 44 if self.state in ("report", "module",
+                                                              "voiceanswer") else 0
+        talking = self.state == "voiceanswer"
+        self.diag_screen.idle_hint = "" if talking else "TAP to go back"
+        self.diag_screen.scroll_hint = ("TAP up/down to scroll" if talking else
+                                        "TAP up/down to scroll  -  TOP-RIGHT to exit")
 
         if self.state == "confirm_clear":
             self._draw_confirm_clear(surface)
@@ -2008,6 +2161,7 @@ class UI:
             return
         if self.state == "voiceanswer":
             self.diag_screen.draw(surface)
+            self._draw_chat_bar(surface)
             return
 
         # --- FACE state (home) ---

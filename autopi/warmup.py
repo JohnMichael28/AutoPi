@@ -15,11 +15,26 @@ Phases (pure logic, no pygame, testable with a fake clock):
     all_clear    coolant reached warm temp (shown briefly)
     warm         normal - nothing to show
 
-"Warm" uses the same 70 C line as the ML model's cold_start regime
-(regimes.py), so the screen and the anomaly model agree on what "cold" is.
-All thresholds come from config.json "warmup".
+EVERY start waits for the idle to settle - including a "warm" restart.
+(Nov 15 bug: the car sat a while, coolant was still above the old 70 C line,
+so AutoPi called it a warm restart and skipped the idle check, while the
+ECU still had the idle raised. Now the only way past the wait is the needle
+actually dropping and STAYING down, the max wait, or the car already moving.)
+
+"Settled" = RPM at/below settled_rpm AND steady (moved less than
+settle_band_rpm) for settle_hold_s - so a needle that is still on its way
+down doesn't count. A warm engine skips the 20 s oil wait (warm_min_wait_s)
+but never skips the settle check.
+
+Face color: a real cold start (coolant below cold_start_c when the engine
+started) is the blue "cold" face; an engine that is still warm-ish but has its
+idle raised gets the white "settling" face, so the two are easy to tell apart.
+
+Warm = 85 C, the same fully-warm line the ML monitor uses for its warm-up
+guard (anomaly.warm_coolant_c). All thresholds come from config.json "warmup".
 """
 import time
+from collections import deque
 
 
 OFF = "off"
@@ -32,11 +47,15 @@ WARM = "warm"
 class WarmupMonitor:
     DEFAULTS = {
         "running_rpm": 400,       # below this the engine is off
-        "settled_rpm": 1000,      # idle at/below this = fast idle is over
-        "settle_hold_s": 3,       # ...and it has to stay there this long
-        "min_wait_s": 20,         # oil circulation, even if idle drops fast
+        "settled_rpm": 1000,      # idle must be at/below this...
+        "settle_band_rpm": 75,    # ...and steady within this band...
+        "settle_hold_s": 5,       # ...for this long (needle stopped falling)
+        "min_wait_s": 20,         # cold engine: oil circulation, even if idle drops fast
+        "warm_min_wait_s": 5,     # warm engine: oil is thin, only the settle check
         "max_wait_s": 90,         # cold-weather idle can stay up; go anyway
-        "warm_coolant_c": 70,     # matches regimes.COLD_START_COOLANT_C
+        "warm_coolant_c": 85,     # fully warm (matches anomaly.warm_coolant_c)
+        "cold_start_c": 50,       # started below this = a real COLD START (blue face);
+                                  # at/above = engine still warm-ish, idle settling (white)
         "gentle_rpm": 3500,       # "keep it under" while cold
         "gentle_throttle_pct": 60,
         "all_clear_show_s": 8,
@@ -54,13 +73,40 @@ class WarmupMonitor:
     def reset(self):
         self.phase = OFF
         self._start = None
-        self._settled_since = None
         self._clear_since = None
         self._start_rpm = None
+        self._warm_start = False
+        self._cold_start = False
+        self._window = deque()          # (time, rpm) while at/below settled_rpm
 
     @staticmethod
     def _num(v):
         return v if isinstance(v, (int, float)) else None
+
+    def _warm(self, coolant):
+        return coolant is not None and coolant >= self._c["warm_coolant_c"]
+
+    def _settled(self, now, rpm):
+        """Needle down AND no longer falling for settle_hold_s."""
+        c = self._c
+        if rpm > c["settled_rpm"]:
+            self._window.clear()
+            return False
+        self._window.append((now, rpm))
+        hold = c["settle_hold_s"]
+        while len(self._window) > 1 and self._window[1][0] <= now - hold:
+            self._window.popleft()        # keep one sample at/older than the hold
+        if now - self._window[0][0] < hold:
+            return False
+        values = [r for _t, r in self._window]
+        band = c["settle_band_rpm"]
+        falling = values[0] - values[-1] > band / 2.0     # needle still dropping
+        if max(values) - min(values) > band or falling:
+            # still moving: restart the hold from here
+            self._window.clear()
+            self._window.append((now, rpm))
+            return False
+        return True
 
     # ------------------------------------------------------------------
     def update(self, rpm=None, coolant=None, speed=None, throttle=None):
@@ -81,30 +127,29 @@ class WarmupMonitor:
             return self.status(rpm, coolant, throttle)
 
         if self.phase == OFF:
+            # Every start waits for the idle - warm or not.
             self._start = now
             self._start_rpm = rpm
-            self._settled_since = None
-            if coolant is not None and coolant >= c["warm_coolant_c"]:
-                self.phase = WARM          # warm restart: nothing to wait for
-            else:
-                self.phase = FAST_IDLE
+            self._warm_start = self._warm(coolant)
+            self._cold_start = coolant is None or coolant < c["cold_start_c"]
+            self._window.clear()
+            self.phase = FAST_IDLE
 
         if self.phase == FAST_IDLE:
             elapsed = now - self._start
-            if rpm <= c["settled_rpm"]:
-                if self._settled_since is None:
-                    self._settled_since = now
-            else:
-                self._settled_since = None
-            settled = (self._settled_since is not None
-                       and now - self._settled_since >= c["settle_hold_s"])
+            settled = self._settled(now, rpm)
+            min_wait = c["warm_min_wait_s"] if self._warm_start else c["min_wait_s"]
             moving = speed is not None and speed >= c["moving_mph"]
-            if (settled and elapsed >= c["min_wait_s"]) \
+            if (settled and elapsed >= min_wait) \
                     or elapsed >= c["max_wait_s"] or moving:
-                self.phase = DRIVE_GENTLY
+                if self._warm(coolant):
+                    self.phase = ALL_CLEAR       # idle down and engine warm: go
+                    self._clear_since = now
+                else:
+                    self.phase = DRIVE_GENTLY
 
-        if self.phase in (FAST_IDLE, DRIVE_GENTLY):
-            if coolant is not None and coolant >= c["warm_coolant_c"]:
+        elif self.phase == DRIVE_GENTLY:
+            if self._warm(coolant):
                 self.phase = ALL_CLEAR
                 self._clear_since = now
 
@@ -129,14 +174,22 @@ class WarmupMonitor:
         coolant_txt = (str(int(coolant)) + "C") if coolant is not None else "--"
         target = str(int(c["warm_coolant_c"])) + "C"
         out = {"phase": self.phase, "cold": self.is_cold(),
-               "headline": "", "detail": ""}
+               "headline": "", "detail": "", "warm_start": self._warm_start,
+               "cold_start": self._cold_start,
+               "mood": ("cold" if self._cold_start else "settling") if self.is_cold() else "",
+               "elapsed_s": self.elapsed_s()}
         if self.phase == FAST_IDLE:
             secs = self.elapsed_s()
             clock = str(secs // 60) + ":" + str(secs % 60).zfill(2)
             rpm_txt = str(int(rpm)) if rpm is not None else "--"
-            out["headline"] = "COLD START - WAIT, FAST IDLE " + rpm_txt + " RPM"
-            out["detail"] = ("idle is settling (" + clock + "), oil circulating."
-                             " Coolant " + coolant_txt)
+            if not self._cold_start:
+                out["headline"] = "WAIT - IDLE STILL HIGH " + rpm_txt + " RPM"
+                out["detail"] = ("waiting for the needle to drop and settle ("
+                                 + clock + "). Coolant " + coolant_txt)
+            else:
+                out["headline"] = "COLD START - WAIT, FAST IDLE " + rpm_txt + " RPM"
+                out["detail"] = ("idle is settling (" + clock + "), oil circulating."
+                                 " Coolant " + coolant_txt)
         elif self.phase == DRIVE_GENTLY:
             too_hard = ((rpm is not None and rpm > c["gentle_rpm"])
                         or (throttle is not None
@@ -149,6 +202,9 @@ class WarmupMonitor:
                              + ": stay under " + str(int(c["gentle_rpm"]))
                              + " RPM, no full throttle")
         elif self.phase == ALL_CLEAR:
-            out["headline"] = "ENGINE WARM - ALL CLEAR"
+            if self._warm_start:
+                out["headline"] = "IDLE SETTLED - READY TO GO"
+            else:
+                out["headline"] = "ENGINE WARM - ALL CLEAR"
             out["detail"] = "Coolant " + coolant_txt + ". Drive normally."
         return out
