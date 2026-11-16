@@ -85,9 +85,32 @@ class LLMClient:
                     IndexError) as err:
                 self._down_until[name] = time.time() + self._retry_after
                 errors.append(name + ": " + str(err)[:80])
+                if self._timed_out(err):
+                    # It IS running, just slow: don't stack another model's
+                    # wait on top - report busy and let the caller retry.
+                    break
+                # Not running (e.g. smart model not installed): fall through
+                # to the next tier right away.
             finally:
                 LOCAL_MODEL_LOCK.release()
         raise LLMUnavailable("; ".join(errors) or "no tier available")
+
+    @staticmethod
+    def _timed_out(err):
+        text = str(err).lower()
+        return isinstance(err, TimeoutError) or "timed out" in text or "timeout" in text
+
+    def reachable(self, name, timeout=2.0):
+        """True if that tier's server answers /health right now."""
+        for tier in self._tiers:
+            if tier["name"] == name:
+                url = tier["base_url"].rstrip("/") + "/health"
+                try:
+                    with urllib.request.urlopen(url, timeout=timeout) as r:
+                        return r.status == 200
+                except Exception:
+                    return False
+        return False
 
     def tier_names(self):
         return [t["name"] for t in self._tiers]

@@ -11,6 +11,7 @@ from autopi.guardrails import PromptLibrary, InjectionScanner, SecurityLog
 from autopi.llm_client import LLMClient
 from autopi.judge import Judge
 from autopi.tools import build_default_registry
+from autopi.car_topics import CarTopics
 from autopi.copilot import Copilot
 from autopi.offline_ai import OfflineExplainer
 
@@ -19,7 +20,13 @@ DEFAULTS = {
     "security_log": "logs/security.jsonl",
     # LOCAL ONLY: the model runs on the Pi itself (llama-server). No laptop,
     # no network - AutoPi must work fully anywhere the car goes.
+    # TALK TO AUTOPI tries the SMART model first (Qwen3-1.7B, its own
+    # llama-server on 8081 - better at real questions, ~2-3x slower). If it
+    # isn't installed/running, it falls straight through to the FAST model
+    # (Qwen3-0.6B on 8080, which the screens use).
     "tiers": [
+        {"name": "smart", "base_url": "http://127.0.0.1:8081",
+         "model": "qwen3-1.7b", "timeout_s": 150},
         {"name": "pi", "base_url": "http://127.0.0.1:8080",
          "model": "qwen3-0.6b", "timeout_s": 90},
     ],
@@ -64,6 +71,8 @@ class AIStack:
         self.registry = build_default_registry(
             cfg["profiles"], snapshot_fn, dtc_fn=dtc_fn,
             explain_fn=offline.explain, dyno_fn=dyno_fn, health_fn=health_fn)
+        topics = CarTopics(snapshot_fn, dtc_fn=dtc_fn, health_fn=health_fn,
+                           dyno_fn=dyno_fn, cfg=cfg.get("topics"))
         jcfg = cfg.get("judge", {})
         self.judge = Judge(self.scanner, prompts=self.prompts, llm=self.llm,
                            max_chars=cfg["max_answer_chars"],
@@ -79,7 +88,8 @@ class AIStack:
                                retry_wait_s=cfg.get("retry_wait_s", 5),
                                history_turns=cfg.get("history_turns", 3),
                                fast_answer=cfg.get("fast_answer", True),
-                               fast_max_tokens=cfg.get("fast_max_tokens", 140))
+                               fast_max_tokens=cfg.get("fast_max_tokens", 140),
+                               topics=topics)
 
     @classmethod
     def from_config(cls, snapshot_fn, vehicle=None, dyno_fn=None,

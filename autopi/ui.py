@@ -295,6 +295,7 @@ class UI:
             ("HEALTH CHECK", lambda: ("ok", str(len(self._readers)) + " readers + live checks")),
             ("ALL-MODULE ACCESS (UDS)", self._boot_modules),
             ("AUTOPI AI MODEL (LOCAL ONLY)", self._boot_local_ai),
+            ("AUTOPI SMART AI (TALK)", self._boot_smart_ai),
         ]
 
     def _boot_storage(self):
@@ -390,6 +391,27 @@ class UI:
         if ans.startswith("AI unavailable"):
             return "warn", "no answer after " + secs + " s"
         return "ok", "loaded + answered in " + secs + " s"
+
+    def _boot_smart_ai(self):
+        # The bigger conversation model (Qwen3-1.7B on its own server). Warm
+        # it with the SAME system prompt TALK uses, so llama-server already
+        # has that prompt cached when the first question comes.
+        if self._ai_stack is None:
+            return "warn", "talk copilot not built"
+        llm = self._ai_stack.llm
+        if "smart" not in llm.tier_names():
+            return "ok", "off in config - TALK uses the fast model"
+        if not llm.reachable("smart"):
+            return "warn", "not installed/running - TALK uses the fast model"
+        t0 = time.monotonic()
+        try:
+            system = self._ai_stack.prompts.system("copilot_fast", security="security_short")
+            llm.chat([{"role": "system", "content": system},
+                      {"role": "user", "content": "Reply with exactly: READY"}],
+                     max_tokens=8, tiers=["smart"])
+        except Exception as err:
+            return "warn", "no answer: " + str(err)[:40]
+        return "ok", "Qwen3-1.7B loaded + answered in " + str(round(time.monotonic() - t0, 1)) + " s"
 
     def handle_key(self, key):
         if self.state == "boot":
@@ -580,7 +602,9 @@ class UI:
         elif self.state in ("waiting", "engineer", "tuning"):
             self.state = "menu"
         elif self.state == "voiceanswer":
-            if y >= self.height - 44:
+            if x >= self.width - 100 and y <= 100:
+                self._chat_done()             # TOP-RIGHT exits, like every screen
+            elif y >= self.height - 44:
                 slot = int(x // (self.width / 3))
                 if slot == 0:
                     self._chat_follow_up()
@@ -1946,7 +1970,7 @@ class UI:
             if n:
                 items.append(("", "raw"))
             if not turn.get("hearing"):
-                items.append(("YOU: " + turn["q"], "raw"))
+                items.append((turn["q"], "you"))     # the driver's words, dark purple
             if turn["busy"]:
                 items.append((turn.get("status") or "AutoPi is thinking...",
                               "ai" if turn.get("hearing") else "dim"))
@@ -1956,9 +1980,19 @@ class UI:
         if not any(t["busy"] for t in self._chat):
             items.append(("", "raw"))
             items.append(("Tap ASK FOLLOW-UP to keep talking.", "dim"))
-        token = self.diag_screen.set_colored("TALK TO AUTOPI", items)
+        # Same scrolling as every other screen. New text follows the bottom
+        # only if you were already at the bottom - if you scrolled up to
+        # re-read, an answer arriving doesn't yank you away.
+        screen = self.diag_screen
+        same = screen.current_token() == getattr(self, "_chat_token", None)
+        follow = (not same) or screen.at_end()
         self.diag_screen.bottom_reserve = 44
-        self.diag_screen.scroll_by(10000)      # newest at the bottom
+        token = screen.set_colored("TALK TO AUTOPI", items, keep_scroll=same)
+        self._chat_token = token
+        if follow:
+            screen.scroll_to_end()
+        else:
+            screen.clamp_scroll()
         return token
 
     def _chat_listen(self):
@@ -2130,9 +2164,8 @@ class UI:
         self.diag_screen.bottom_reserve = 44 if self.state in ("report", "module",
                                                               "voiceanswer") else 0
         talking = self.state == "voiceanswer"
-        self.diag_screen.idle_hint = "" if talking else "TAP to go back"
-        self.diag_screen.scroll_hint = ("TAP up/down to scroll" if talking else
-                                        "TAP up/down to scroll  -  TOP-RIGHT to exit")
+        self.diag_screen.idle_hint = "TOP-RIGHT to exit" if talking else "TAP to go back"
+        self.diag_screen.scroll_hint = "TAP up/down to scroll  -  TOP-RIGHT to exit"
 
         if self.state == "confirm_clear":
             self._draw_confirm_clear(surface)

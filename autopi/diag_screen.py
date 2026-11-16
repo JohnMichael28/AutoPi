@@ -31,7 +31,8 @@ class DiagScreen:
         self._loading = False
         self._reader = None
 
-    KIND_COLORS = {"head": TERM_DIM, "dim": TERM_DIM, "raw": TERM_GREEN,
+    # "you" = what the driver said on TALK TO AUTOPI (dark purple).
+    KIND_COLORS = {"you": (175, 125, 255), "head": TERM_DIM, "dim": TERM_DIM, "raw": TERM_GREEN,
                    "ai": WARN_YELLOW}
 
     def open(self, reader, priority=None):
@@ -235,6 +236,18 @@ class DiagScreen:
     def can_scroll(self):
         # True if there's more content than fits on screen.
         return len(self._lines) > self._visible()
+
+    def max_scroll(self):
+        return max(0, len(self._lines) - self._visible())
+
+    def at_end(self):
+        return self._scroll >= self.max_scroll()
+
+    def scroll_to_end(self):
+        self._scroll = self.max_scroll()
+
+    def clamp_scroll(self):
+        self._scroll = max(0, min(self._scroll, self.max_scroll()))
 
     def draw(self, surface):
         self._last_draw = time.monotonic()

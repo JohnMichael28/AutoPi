@@ -62,6 +62,9 @@ def readable_evidence(entry, width=110):
         else:
             lines.append((prefix + ": " if prefix else "") + str(value))
 
+    if isinstance(data, dict) and data.get("fact"):
+        lines.append(str(data["fact"]))          # code's own answer sentence
+        data = dict((k, v) for k, v in data.items() if k != "fact")
     walk("", data)
     return [l[:width] for l in lines] or [name + ": (empty)"]
 
@@ -113,7 +116,8 @@ class Copilot:
                  max_turns=5, max_tool_calls=3, deadline_s=45.0,
                  max_rewrites=1, tool_result_chars=1500, route_first=True,
                  offline_retries=3, retry_wait_s=5.0, history_turns=3,
-                 sleep=time.sleep, fast_answer=True, fast_max_tokens=140):
+                 sleep=time.sleep, fast_answer=True, fast_max_tokens=140,
+                 topics=None):
         self._llm = llm
         self._tools = registry
         self._prompts = prompts
@@ -135,6 +139,9 @@ class Copilot:
         self._sleep = sleep
         self._fast = fast_answer
         self._fast_tokens = fast_max_tokens
+        # CarTopics: picks the right car data for the question and works out
+        # the answering fact in code (fuel range, hot or not, codes...).
+        self._topics = topics
 
     # ------------------------------------------------------------------
     def ask(self, question, profile="driving", history=None, on_status=None,
@@ -187,6 +194,23 @@ class Copilot:
         turns = 0
         tool_calls = 0
         rewrites = 0
+        if self._fast and self._topics is not None:
+            gathered = self._topics.gather(question, history)
+            for name, data in gathered:
+                text = json.dumps(data, default=str)
+                hits = self._scan.scan(text)
+                if hits:
+                    incident("topic:" + name, "instruction-like text in car data", hits)
+                    continue
+                evidence.append(name + ": " + text[:self._tool_chars])
+            step("TOPICS", ", ".join(n for n, _d in gathered))
+            if evidence:
+                data_text = self._topics.as_data(
+                    [(n, d) for n, d in gathered
+                     if any(e.startswith(n + ": ") for e in evidence)])
+                return self._fast_path(question, history, evidence, trace, incidents,
+                                       profile, step, incident, on_status,
+                                       still_wanted, t0, data_text=data_text)
         if self._route_first:
             name, args = self._route(question, history)
             try:
@@ -323,10 +347,10 @@ class Copilot:
 
     # ------------------------------------------------------------------
     def _fast_path(self, question, history, evidence, trace, incidents, profile,
-                   step, incident, on_status, still_wanted, t0):
+                   step, incident, on_status, still_wanted, t0, data_text=None):
         """One short model call: compact prompt + the data code fetched."""
         system = self._prompts.system("copilot_fast", security="security_short")
-        data = "\n".join(evidence)
+        data = data_text if data_text else "\n".join(evidence)
         parts = []
         if history:
             past = "\n".join("Driver: " + str(q)[:160] + "\nAutoPi: " + str(a)[:220]
@@ -372,10 +396,12 @@ class Copilot:
                 self._sleep(self._retry_wait)
                 waited += time.time() - t_call
                 continue
-            answer = tidy_answer(text)
-            obj, _err = parse_json_reply(answer)       # tolerate a JSON reply anyway
+            # Tolerate a JSON reply anyway: unpack it FIRST, then tidy (tidy drops
+            # any sentence mentioning SECURITY - that would eat "security_flag").
+            obj, _err = parse_json_reply(text)
             if isinstance(obj, dict) and obj.get("answer"):
-                answer = str(obj["answer"]).strip()
+                text = str(obj["answer"])
+            answer = tidy_answer(text)
             step("ANSWER", answer)
             if self._scan.scan(answer):
                 incident("model", "instruction-like text in answer", self._scan.scan(answer))

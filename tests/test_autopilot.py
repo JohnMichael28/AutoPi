@@ -1349,5 +1349,47 @@ class SettlingFaceTests(unittest.TestCase):
                                             cold=True, settling=True), "red")
 
 
+class TalkScreenTests(unittest.TestCase):
+    def test_driver_words_are_dark_purple_without_you_prefix(self):
+        try:
+            import pygame
+            pygame.init()
+        except Exception:
+            self.skipTest("pygame not installed")
+        from autopi.diag_screen import DiagScreen
+        ds = DiagScreen(800, 480)
+        ds.set_colored("TALK TO AUTOPI", [("how is my car doing", "you"),
+                                          ("Coolant is normal.", "ai")])
+        text, color = ds._lines[0]
+        self.assertEqual(text, "how is my car doing")
+        r, g, b = color
+        self.assertTrue(b > g and r > g and b > r)      # purple
+
+
+class TalkScrollTests(unittest.TestCase):
+    """TALK TO AUTOPI scrolls like every other screen: 3 lines per tap, and a
+    new answer doesn't yank you away if you scrolled up to re-read."""
+
+    def test_scroll_helpers(self):
+        try:
+            import pygame
+            pygame.init()
+        except Exception:
+            self.skipTest("pygame not installed")
+        from autopi.diag_screen import DiagScreen
+        ds = DiagScreen(800, 480)
+        ds.bottom_reserve = 44
+        ds.set_colored("TALK TO AUTOPI", [("line " + str(i), "ai") for i in range(40)])
+        ds.scroll_to_end()
+        self.assertTrue(ds.at_end())
+        ds.scroll_by(-3)
+        self.assertEqual(ds._scroll, ds.max_scroll() - 3)
+        self.assertFalse(ds.at_end())
+        ds.set_colored("TALK TO AUTOPI", [("line " + str(i), "ai") for i in range(45)],
+                       keep_scroll=True)
+        ds.clamp_scroll()
+        self.assertEqual(ds._scroll, 40 - ds._visible() - 3)   # stayed where you were
+
+
 if __name__ == "__main__":
     unittest.main()

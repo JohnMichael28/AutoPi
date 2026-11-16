@@ -111,7 +111,7 @@ class ToolRegistry:
 
 LIVE_KEYS = ["rpm", "speed", "coolant_temp", "intake_temp", "engine_load",
              "throttle", "voltage", "timing", "afr", "stft_b1", "ltft_b1",
-             "o2_b1s2", "boost", "fuel", "run_time", "mode"]
+             "o2_b1s2", "boost", "fuel", "fuel_pct", "run_time", "mode"]
 
 
 NORMAL_RANGES = {

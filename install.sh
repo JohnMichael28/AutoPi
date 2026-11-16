@@ -55,6 +55,11 @@ MODEL_FILE="$(setting model_file 'Qwen_Qwen3-0.6B-Q4_K_M.gguf')"
 MODEL_URL="$(setting model_url 'https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf')"
 LLAMA_ARGS="$(setting llama_args '-t 3 -c 2048 --host 127.0.0.1 --port 8080')"
 LLAMA_CPUS="$(setting llama_cpus '1,2,3')"
+SMART="$(setting smart_model 'True')"
+SMART_FILE="$(setting smart_model_file 'Qwen_Qwen3-1.7B-Q4_K_M.gguf')"
+SMART_URL="$(setting smart_model_url 'https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q4_K_M.gguf')"
+SMART_ARGS="$(setting smart_llama_args '-t 3 -c 2048 --host 127.0.0.1 --port 8081')"
+SMART_MIN_RAM="$(setting smart_min_ram_mb '3500')"
 VOSK_DIR="$(setting vosk_dir 'vosk-model-small-en-us-0.15')"
 VOSK_URL="$(setting vosk_url 'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip')"
 
@@ -66,7 +71,7 @@ fi
 [ "$DRY" = "1" ] || sudo -v || { echo "sudo is needed"; exit 1; }
 
 # ---- 1. system packages ----------------------------------------------------
-say "1/11 system packages"
+say "1/12 system packages"
 # python3-pygame = Debian's pygame, built against the system SDL that has the
 # KMSDRM (no-desktop) display driver - the pip wheel may not have it.
 REQUIRED="git python3-full python3-venv python3-dev python3-pygame build-essential cmake curl unzip"
@@ -78,7 +83,7 @@ for pkg in $OPTIONAL; do            # one at a time: a renamed package can't sin
 done
 
 # ---- 2. Pi settings: console autologin + device permissions ------------------
-say "2/11 Pi settings"
+say "2/12 Pi settings"
 if command -v raspi-config >/dev/null; then
     if run sudo raspi-config nonint do_boot_behaviour B2; then ok "boot to console with autologin"; else warn "console autologin not set"; fi
 else
@@ -87,7 +92,7 @@ fi
 if run sudo usermod -aG video,render,input,dialout "$ME"; then ok "groups: video render input dialout"; else warn "could not add groups"; fi
 
 # ---- 3. Python environment ---------------------------------------------------
-say "3/11 Python venv + packages"
+say "3/12 Python venv + packages"
 cd "$PROJECT" || exit 1
 # --system-site-packages: the venv uses the system pygame (KMSDRM display).
 [ -d venv ] || run python3 -m venv venv --system-site-packages
@@ -95,7 +100,7 @@ run venv/bin/pip install --upgrade pip
 if run venv/bin/pip install -r requirements.txt; then ok "python packages"; else fail "python packages (see logs/install.log)"; fi
 
 # ---- 4. config + folders -----------------------------------------------------
-say "4/11 config + folders"
+say "4/12 config + folders"
 if [ -f config.json ]; then
     ok "config.json kept"
 else
@@ -106,7 +111,7 @@ run mkdir -p data data/archive logs reports models
 ok "folders ready"
 
 # ---- 5. voice model (offline speech-to-text) ---------------------------------
-say "5/11 voice model"
+say "5/12 voice model"
 if [ -d "$VOSK_DIR" ]; then
     ok "voice model present"
 elif run curl -fL -o /tmp/vosk.zip "$VOSK_URL" && run unzip -q -o /tmp/vosk.zip -d "$PROJECT"; then
@@ -117,7 +122,7 @@ else
 fi
 
 # ---- 6. llama.cpp (the on-Pi AI engine) --------------------------------------
-say "6/11 llama.cpp (first build takes 20-40 minutes on a Pi 4)"
+say "6/12 llama.cpp (first build takes 20-40 minutes on a Pi 4)"
 if [ -x "$LLAMA_DIR/build/bin/llama-server" ]; then
     ok "llama-server already built"
 else
@@ -131,7 +136,7 @@ else
 fi
 
 # ---- 7. AI model file --------------------------------------------------------
-say "7/11 AI model"
+say "7/12 AI model"
 run mkdir -p "$MODEL_DIR"
 if [ -s "$MODEL_DIR/$MODEL_FILE" ]; then
     ok "AI model present"
@@ -144,7 +149,7 @@ else
 fi
 
 # ---- 8. llama-server service (starts the AI at every boot) -------------------
-say "8/11 llama-server service"
+say "8/12 llama-server service"
 UNIT=/etc/systemd/system/llama-server.service
 if [ -f "$UNIT" ]; then
     ok "llama-server service kept (already set up)"
@@ -173,8 +178,56 @@ EOF
     rm -f "$TMP"
 fi
 
+# ---- 8b. SMART model for TALK TO AUTOPI (Qwen3-1.7B, its own server) ----------
+# Screens keep the fast 0.6B model on 8080. Conversation uses this bigger,
+# smarter one on 8081 (~2-3x slower). If it's missing, TALK falls back to 0.6B.
+say "8b/12 smart conversation model"
+RAM_MB="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+SUNIT=/etc/systemd/system/llama-server-smart.service
+if [ "$SMART" != "True" ] && [ "$SMART" != "true" ]; then
+    ok "smart model off in config"
+elif [ "${RAM_MB:-0}" -lt "$SMART_MIN_RAM" ]; then
+    warn "smart model skipped: ${RAM_MB} MB RAM (needs ${SMART_MIN_RAM}) - TALK uses the fast model"
+else
+    if [ -s "$MODEL_DIR/$SMART_FILE" ]; then
+        ok "smart model present"
+    elif run curl -fL -o "$MODEL_DIR/$SMART_FILE.part" "$SMART_URL" \
+         && run mv "$MODEL_DIR/$SMART_FILE.part" "$MODEL_DIR/$SMART_FILE"; then
+        ok "smart model downloaded (~1.1 GB)"
+    else
+        run rm -f "$MODEL_DIR/$SMART_FILE.part"
+        warn "smart model download failed - TALK uses the fast model"
+    fi
+    if [ -f "$SUNIT" ]; then
+        ok "smart model service kept (already set up)"
+    elif [ -s "$MODEL_DIR/$SMART_FILE" ] || [ "$DRY" = "1" ]; then
+        TMP="$(mktemp)"
+        cat >"$TMP" <<EOF
+[Unit]
+Description=llama.cpp SMART server for TALK TO AUTOPI (Qwen3-1.7B)
+After=network.target llama-server.service
+
+[Service]
+User=$ME
+ExecStart=/usr/bin/taskset -c $LLAMA_CPUS $LLAMA_DIR/build/bin/llama-server -m $MODEL_DIR/$SMART_FILE $SMART_ARGS
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        if run sudo install -m 644 "$TMP" "$SUNIT" && run sudo systemctl daemon-reload \
+           && run sudo systemctl enable --now llama-server-smart; then
+            ok "smart model service installed (port 8081)"
+        else
+            warn "smart model service not installed - TALK uses the fast model"
+        fi
+        rm -f "$TMP"
+    fi
+fi
+
 # ---- 9. permission for the report-sharing WiFi (nmcli) -----------------------
-say "9/11 report-sharing WiFi permission"
+say "9/12 report-sharing WiFi permission"
 RULE=/etc/sudoers.d/autopi-nmcli
 if [ -f "$RULE" ]; then
     ok "nmcli permission kept"
@@ -191,7 +244,7 @@ else
 fi
 
 # ---- 10. SD-card care: system logs in RAM ------------------------------------
-say "10/11 SD-card care"
+say "10/12 SD-card care"
 JCONF=/etc/systemd/journald.conf.d/autopi.conf
 if [ -f "$JCONF" ]; then
     ok "system logs already kept in RAM"
@@ -209,7 +262,7 @@ else
 fi
 
 # ---- 11. start AutoPi on the screen at boot ----------------------------------
-say "11/11 autostart"
+say "11/12 autostart"
 PROFILE="$HOME/.bash_profile"
 if [ -f "$PROFILE" ] && grep -q -e "main_ui.py" -e "run_guardian.sh" "$PROFILE"; then
     ok "autostart kept (.bash_profile already launches AutoPi)"

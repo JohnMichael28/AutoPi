@@ -81,10 +81,18 @@ Tested on a 2024 Cadillac XT5 350T (2.0T) and a 2023 Subaru Outback Wilderness
   the ML monitor, warm-up and the last all-module scan. If the AutoPi AI is busy it
   keeps trying (3 retries, shown on screen) before showing the plain-English data;
   **ASK AGAIN** retries, **DONE** ends the conversation. Listening, hearing and
-  thinking all show on the one TALK TO AUTOPI screen. Answers are ONE short call
-  to the AutoPi AI: code fetches the right car data first, then a compact prompt
-  (~600 tokens, `/no_think`, prompt cache) asks for 2-3 plain sentences, and the
-  judge checks every number against the data. Fully offline speech recognition
+  thinking all show on the one TALK TO AUTOPI screen. **Code answers the facts,
+  the AI explains them:** `car_topics.py` reads the question (gas / range,
+  temperature, codes, other modules, fuel mix, speed/engine, dyno, battery,
+  warm-up, overall health — plus an honest "AutoPi can't read that" for oil
+  life, tire pressures etc.), pulls just that data and works out the answering
+  fact ("about 338 miles of range left — no need for gas yet"). Then ONE short
+  call (~450 tokens, `/no_think`, prompt cache) asks for 2-3 plain sentences,
+  and the judge checks every number. Even if the AI can't answer, you still get
+  the fact. Conversation uses a **smarter model** (Qwen3-1.7B Q4_K_M, its own
+  `llama-server-smart` on port 8081, ~2-3x slower than 0.6B but far better at
+  real questions); the screens keep the fast 0.6B. If the smart model isn't
+  installed, TALK falls back to the fast one automatically. Fully offline speech recognition
   (Vosk) + fully offline answers (local SLM).
 - **ML anomaly detection** — a trained, context-aware Isolation Forest runs
   on-device and flags readings that deviate from your car's learned normal.

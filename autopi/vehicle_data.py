@@ -234,6 +234,7 @@ class VehicleData:
             "boost": safe_round(reading.boost_psi, 1),
             "afr": safe_round(reading.afr, 1),
             "fuel": fuel_range,
+            "fuel_pct": safe_round(fuel_pct, 0),       # tank level %, for "do I need gas?"
             "engine_load": safe_round(reading.engine_load, 1),
             "oil_temp": "--",
             "rpm": safe_round(reading.rpm, 0),

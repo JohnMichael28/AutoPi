@@ -310,6 +310,12 @@ class TestFastVoicePath(Base):
         r = self.copilot(llm, fast=True).ask("coolant?")
         self.assertEqual(r.answer, "Coolant is 92 C, normal.")
 
+    def test_json_reply_is_unpacked_not_cut(self):
+        llm = ScriptedLLM(['{"answer": "Coolant is 92 C. That is normal.", '
+                           '"evidence": [], "security_flag": null}'])
+        r = self.copilot(llm, fast=True).ask("coolant?")
+        self.assertEqual(r.answer, "Coolant is 92 C. That is normal.")
+
     def test_invented_number_still_blocked(self):
         llm = ScriptedLLM(["Coolant is 140 C, overheating!", "Coolant is 140 C."])
         r = self.copilot(llm, fast=True).ask("coolant?")
@@ -344,6 +350,117 @@ class TestFastVoicePath(Base):
         self.assertEqual(text, "hi")
         self.assertTrue(sent["messages"][-1]["content"].endswith("/no_think"))
         self.assertTrue(sent["cache_prompt"])
+
+
+class TestCarTopics(Base):
+    """Nov 15 real car: every question got the same canned answer. Each kind
+    of question must now get ITS data, with the answering fact computed by code."""
+
+    def topics(self, snap=None, codes=None, health=None):
+        from autopi.car_topics import CarTopics
+        s = dict(self.snap)
+        s.update(snap or {})
+        return CarTopics(lambda: s, dtc_fn=lambda: (codes if codes is not None else []),
+                         health_fn=lambda: (health or {"warnings_now": "none"}))
+
+    def fact(self, t, q):
+        return " ".join(d["fact"] for _n, d in t.gather(q))
+
+    def test_gas_questions_get_the_fuel_range(self):
+        t = self.topics({"fuel": 338, "fuel_pct": 62})
+        for q in ("do i need to get gas", "how much longer until i need gas",
+                  "how far can i go", "how's my god do i need to get gas it"):
+            self.assertIn("fuel", t.pick(q), q)
+        self.assertIn("338 miles", self.fact(t, "do i need gas"))
+        self.assertIn("No need for gas yet", self.fact(t, "do i need gas"))
+        low = self.topics({"fuel": 31, "fuel_pct": 9})
+        self.assertIn("Get gas soon", self.fact(low, "do i need gas"))
+
+    def test_each_kind_of_question_routes_to_its_data(self):
+        t = self.topics()
+        cases = {"is my engine overheating": "temperature",
+                 "any check engine codes": "codes",
+                 "what's wrong with the eyesight module": "modules",
+                 "is my fuel mixture rich": "fuel_mix",
+                 "how fast am i going": "engine",
+                 "how much horsepower did i make": "power",
+                 "is my battery ok": "battery",
+                 "what's my oil life": "cant_read",
+                 "is it safe to drive off": "warmup",
+                 "how is my car doing": "overview"}
+        for q, topic in cases.items():
+            self.assertIn(topic, t.pick(q), q)
+
+    def test_whole_words_only(self):
+        t = self.topics()
+        self.assertNotIn("modules", t.pick("absolutely nothing"))     # not "abs"
+
+    def test_misheard_codes_and_follow_up(self):
+        t = self.topics(codes=[("P0420", "cat")])
+        self.assertIn("codes", t.pick("any gods"))
+        self.assertIn("P0420", self.fact(t, "any gods"))
+        self.assertEqual(t.pick("is that bad", [("do i need gas", "...")]), ["fuel"])
+
+    def test_hot_vs_warming_vs_normal(self):
+        self.assertIn("HOT", self.fact(self.topics({"coolant_temp": 110}), "coolant?"))
+        self.assertIn("warming up", self.fact(self.topics({"coolant_temp": 70}), "coolant?"))
+        self.assertIn("normal", self.fact(self.topics({"coolant_temp": 92}), "coolant?"))
+
+    def test_cant_read_is_honest(self):
+        f = self.fact(self.topics(), "what's my tire pressure")
+        self.assertIn("can't read", f)
+
+    def test_copilot_puts_the_fact_in_front_of_the_model(self):
+        from autopi.car_topics import CarTopics
+        llm = ScriptedLLM(["You have about 210 miles of range, no need for gas yet."])
+        judge = Judge(self.scanner, prompts=self.prompts, llm=llm, llm_enabled=False)
+        cop = Copilot(llm, self.reg, self.prompts, judge, self.scanner, self.log,
+                      sleep=lambda s: None, topics=CarTopics(lambda: self.snap))
+        r = cop.ask("do i need to get gas")
+        self.assertEqual(r.status, "done", r.trace)
+        sent = llm.seen[0][1]["content"]
+        self.assertIn("FUEL FACT: You have about 210 miles", sent)
+
+    def test_offline_still_shows_the_fact_sentence(self):
+        from autopi.car_topics import CarTopics
+        judge = Judge(self.scanner, prompts=self.prompts, llm=None, llm_enabled=False)
+        cop = Copilot(ScriptedLLM([], offline=True), self.reg, self.prompts, judge,
+                      self.scanner, self.log, sleep=lambda s: None,
+                      topics=CarTopics(lambda: self.snap))
+        text = "\n".join(cop.ask("do i need gas").lines())
+        self.assertIn("You have about 210 miles of range left", text)
+
+
+class TestSmartModelFallback(Base):
+    def test_smart_not_running_falls_through_to_fast(self):
+        from autopi.llm_client import LLMClient
+        import urllib.error
+        cl = LLMClient([{"name": "smart", "base_url": "http://s", "model": "a"},
+                        {"name": "pi", "base_url": "http://p", "model": "b"}])
+        calls = []
+
+        def post(tier, messages, max_tokens, temperature):
+            calls.append(tier["name"])
+            if tier["name"] == "smart":
+                raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+            return "fast answer"
+        cl._post = post
+        text, tier = cl.chat([{"role": "user", "content": "q"}])
+        self.assertEqual((text, tier), ("fast answer", "pi"))
+
+    def test_smart_slow_does_not_stack_a_second_wait(self):
+        from autopi.llm_client import LLMClient
+        cl = LLMClient([{"name": "smart", "base_url": "http://s", "model": "a"},
+                        {"name": "pi", "base_url": "http://p", "model": "b"}])
+        calls = []
+
+        def post(tier, messages, max_tokens, temperature):
+            calls.append(tier["name"])
+            raise TimeoutError("timed out")
+        cl._post = post
+        with self.assertRaises(LLMUnavailable):
+            cl.chat([{"role": "user", "content": "q"}])
+        self.assertEqual(calls, ["smart"])
 
 
 if __name__ == "__main__":

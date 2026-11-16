@@ -90,6 +90,12 @@
     "security_log": "logs/security.jsonl",
     "tiers": [
       {
+        "name": "smart",
+        "base_url": "http://127.0.0.1:8081",
+        "model": "qwen3-1.7b",
+        "timeout_s": 150
+      },
+      {
         "name": "pi",
         "base_url": "http://127.0.0.1:8080",
         "model": "qwen3-0.6b",
@@ -125,7 +131,16 @@
     "retry_wait_s": 5,
     "history_turns": 3,
     "fast_answer": true,
-    "fast_max_tokens": 140
+    "fast_max_tokens": 140,
+    "topics": {
+      "fuel_low_miles": 50,
+      "fuel_low_pct": 15,
+      "coolant_hot_c": 105,
+      "coolant_warm_c": 85,
+      "trim_normal_pct": 10,
+      "trim_problem_pct": 15,
+      "max_topics": 3
+    }
   },
   "warmup": {
     "running_rpm": 400,
@@ -370,6 +385,11 @@
     "llama_args": "-t 3 -c 2048 --host 127.0.0.1 --port 8080",
     "llama_cpus": "1,2,3",
     "vosk_dir": "vosk-model-small-en-us-0.15",
-    "vosk_url": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+    "vosk_url": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+    "smart_model": true,
+    "smart_model_file": "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+    "smart_model_url": "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+    "smart_llama_args": "-t 3 -c 2048 --host 127.0.0.1 --port 8081",
+    "smart_min_ram_mb": 3500
   }
 }
